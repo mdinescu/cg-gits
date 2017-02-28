@@ -275,7 +275,6 @@ class Player
                     }
                 }
 
-                // may only look at links with capacity > 0
                 var interestingLinks = myC.Links.Values
                                         .Where(l => l.B.Owner != ME && l.B.Troups < myC.Troups)
                                         .OrderBy(l => -l.B.Capacity)
@@ -283,13 +282,12 @@ class Player
                                         .ThenBy(l => l.B.Troups);
                 
                 int troupsLeft = myC.Troups; int reserve = myC.Capacity;
-                
+                     
                 foreach(var il in interestingLinks) {                        
                     Console.Error.WriteLine("{0} troups = {1}, capacity = {2} -> {3}", myC, myC.Troups, myC.Capacity, il);
-                    // maybe factor in production at the destination..
                     if(il.B.Troups + reserve < troupsLeft) {
-                        var sp = GetBestPathFwd(myC.Id, il.B.Id, cells);                    
-                        actions[myC.Id].Add(Action.Move(myC.Id, sp.Id, il.B.Troups + 1));
+                        var sp = ShortestPath(myC.Id, il.B.Id, cells);                    
+                        actions[myC.Id].Add(Action.Move(myC.Id, sp[0].B.Id, il.B.Troups + 1));
                         troupsLeft -= (il.B.Troups+1);
                     }
                     if(troupsLeft <= reserve)
@@ -387,8 +385,6 @@ class Player
     
     private static Cell GetBestPathFwd(int from, int to, Dictionary<int, Cell> cells) {
         var sp = ShortestPath(from, to, cells); 
-        return sp[0].B; // just return the first link.. 
-        /* more complex decision tree..
         if (sp[0].B.Owner == ME) return sp[0].B;
         if (sp.Count > 1) {            
             foreach(var pLink in sp) {
@@ -399,19 +395,20 @@ class Player
             }   
         }
         return cells[to];
-        */
     }
 
     private static Cell FindDefensiveTarget(IEnumerable<Cell> cells, Cell myCell) {
         var defenseTarget = cells.Where(oc => oc.Capacity >= 2)
                                     .OrderBy(oc => -oc.Capacity)
                                     .ThenBy(oc => oc.Troups)
+                                    // potentially leave this empty
                                     .ThenBy(oc => myCell != null ? oc.Links[myCell.Id].Dist : -oc.Owner)
                                     .FirstOrDefault();
         if(defenseTarget == null) {
             defenseTarget = cells.Where(oc => oc.Capacity > 0)
                             .OrderBy(oc => -oc.Capacity)
                             .ThenBy(oc => oc.Troups)
+                            // potentially leave this empty
                             .ThenBy(oc => myCell != null ? oc.Links[myCell.Id].Dist : -oc.Owner)
                             .FirstOrDefault();
         }
