@@ -186,7 +186,7 @@ class Player
                     cells[entityId].Owner = arg1;
                     cells[entityId].Troups = arg2;
                     cells[entityId].Capacity = arg3;
-                    Console.Error.WriteLine("E{0}.{1}: {2},{3},{4},{5}", entityType, entityId, arg1, arg2, arg3, arg4);                    
+                    //Console.Error.WriteLine("E{0}.{1}: {2},{3},{4},{5}", entityType, entityId, arg1, arg2, arg3, arg4);                    
                 }else if(entityType == TROUP) {
                     Troup t = new Troup(entityId);
                     t.Owner = arg1;
@@ -243,7 +243,7 @@ class Player
             
             foreach(var myC in myCells) {
                 var interestingLinks = myC.Links.Values
-                                        .Where(l => l.B.Owner != ME && l.B.Troups < myC.Troups)
+                                        .Where(l => l.B.Owner != ME && l.B.Troups < myC.Troups && l.B.Capacity > 0)
                                         .OrderBy(l => -l.B.Capacity)
                                         .ThenBy(l => ShortestDist(myC.Id, l.B.Id))
                                         .ThenBy(l => l.B.Troups);
@@ -252,9 +252,10 @@ class Player
                      
                 foreach(var il in interestingLinks) {                        
                     Console.Error.WriteLine("{0} troups = {1}, capacity = {2} -> {3}", myC, myC.Troups, myC.Capacity, il);
-                    if(il.B.Troups + reserve < troupsLeft) {
-                        var sp = ShortestPath(myC.Id, il.B.Id, cells);                    
-                        tests.Add(Tuple.Create(myC.Id, sp[0].B.Id, il.B.Troups));
+                    if(il.B.Troups + il.B.Capacity + reserve < troupsLeft) {
+                        var sp = GetBestPathFwd(myC.Id, il.B.Id, cells);                    
+                        
+                        tests.Add(Tuple.Create(myC.Id, sp.Id, il.B.Troups + il.B.Capacity));
                         troupsLeft -= (il.B.Troups+1);
                     }
                     if(troupsLeft <= reserve)
@@ -281,20 +282,12 @@ class Player
             
             if(newBomb) {
                 Console.Error.WriteLine(" -----  GOING FOR DEFENSE ----- ");
-                var defenseTarget = othCells.Where(oc => oc.Capacity >= 2)
-                                    .OrderBy(oc => -oc.Capacity)
-                                    .ThenBy(oc => oc.Troups)
-                                    //.ThenBy(oc => oc.Links[myC.Id].Dist)
-                                    .FirstOrDefault();
-                if(defenseTarget == null) {
-                    defenseTarget = othCells.Where(oc => oc.Capacity > 0)
-                                    .OrderBy(oc => -oc.Capacity)
-                                    .ThenBy(oc => oc.Troups)
-                                    //.ThenBy(oc => oc.Links[myC.Id].Dist)
-                                    .FirstOrDefault();
-                }
+                
+                var defenseTarget = FindDefensiveTarget(othCells, null);
+                
                 if(defenseTarget != null) {                    
                     foreach(var myC in myCells) {
+                        defenseTarget = FindDefensiveTarget(othCells, myC);
                         if(myC.Troups > 0) {
                             Console.Write("MOVE {0} {1} {2};", myC.Id, defenseTarget.Id, myC.Troups);
                         }
@@ -345,5 +338,36 @@ class Player
             
             Console.WriteLine("MSG " + msg);
         }
+    }
+    
+    
+    private static Cell GetBestPathFwd(int from, int to, Dictionary<int, Cell> cells) {
+        var sp = ShortestPath(from, to, cells); 
+        if (sp[0].B.Owner == ME) return sp[0].B;
+        if (sp.Count > 1) {            
+            foreach(var pLink in sp) {
+                if (pLink.B.Owner == ME) return pLink.B;
+                if (pLink.B.Capacity == 0 && pLink.B.Troups < 2) return pLink.B;
+                if (pLink.B.Capacity * ShortestDist(from, pLink.B.Id) > 3)
+                    continue;                
+            }   
+        }
+        return cells[to];
+    }
+    
+    private static Cell FindDefensiveTarget(IEnumerable<Cell> cells, Cell myCell) {
+        var defenseTarget = cells.Where(oc => oc.Capacity >= 2)
+                                    .OrderBy(oc => -oc.Capacity)
+                                    .ThenBy(oc => oc.Troups)
+                                    .ThenBy(oc => myCell != null ? oc.Links[myCell.Id].Dist : -oc.Owner)
+                                    .FirstOrDefault();
+        if(defenseTarget == null) {
+            defenseTarget = cells.Where(oc => oc.Capacity > 0)
+                            .OrderBy(oc => -oc.Capacity)
+                            .ThenBy(oc => oc.Troups)
+                            .ThenBy(oc => myCell != null ? oc.Links[myCell.Id].Dist : -oc.Owner)
+                            .FirstOrDefault();
+        }
+        return defenseTarget;
     }
 }
