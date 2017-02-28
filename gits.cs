@@ -72,7 +72,6 @@ class Player
         public int Time { get; set; }
         public int Owner { get; set; }
     }
-    
     class Action {
         public Action (String verb, int from, int to) {
             Verb = verb; From = from; To = to;
@@ -263,7 +262,7 @@ class Player
             
             var actions = new Dictionary<int, List<Action>>();
             
-            foreach(var myC in myCells) {                
+            foreach(var myC in myCells) {
                 actions.Add(myC.Id, new List<Action>());                
             }
             
@@ -275,21 +274,22 @@ class Player
                         Console.Error.WriteLine(myC + " under attack in " + firstWave.Time + " w/ " + firstWave.Size + " (total incoming = " + underAttack.Sum(t => t.Size) + ")");
                     }
                 }
-                
+
+                // may only look at links with capacity > 0
                 var interestingLinks = myC.Links.Values
-                                        .Where(l => l.B.Owner != ME && l.B.Troups < myC.Troups && l.B.Capacity > 0)
+                                        .Where(l => l.B.Owner != ME && l.B.Troups < myC.Troups)
                                         .OrderBy(l => -l.B.Capacity)
                                         .ThenBy(l => ShortestDist(myC.Id, l.B.Id))
                                         .ThenBy(l => l.B.Troups);
                 
                 int troupsLeft = myC.Troups; int reserve = myC.Capacity;
-                     
+                
                 foreach(var il in interestingLinks) {                        
                     Console.Error.WriteLine("{0} troups = {1}, capacity = {2} -> {3}", myC, myC.Troups, myC.Capacity, il);
-                    if(il.B.Troups + il.B.Capacity + reserve < troupsLeft) {
+                    // maybe factor in production at the destination..
+                    if(il.B.Troups + reserve < troupsLeft) {
                         var sp = GetBestPathFwd(myC.Id, il.B.Id, cells);                    
-                        
-                        actions[myC.Id].Add(Action.Move(myC.Id, sp.Id, il.B.Troups + il.B.Capacity));
+                        actions[myC.Id].Add(Action.Move(myC.Id, sp.Id, il.B.Troups + 1));
                         troupsLeft -= (il.B.Troups+1);
                     }
                     if(troupsLeft <= reserve)
@@ -315,13 +315,13 @@ class Player
             
             
             if(newBomb) {
-                Console.Error.WriteLine(" -----  GOING FOR DEFENSE ----- ");            
+                Console.Error.WriteLine(" -----  GOING FOR DEFENSE ----- ");
                 var defenseTarget = FindDefensiveTarget(othCells, null);
                 
                 if(defenseTarget != null) {                    
-                    foreach(var myC in myCells) {                        
-                        defenseTarget = FindDefensiveTarget(othCells, myC);
+                    foreach(var myC in myCells) {
                         if(myC.Troups > 0) {
+                            defenseTarget = FindDefensiveTarget(othCells, myC);
                             actions[myC.Id].Clear();
                             actions[myC.Id].Add(Action.Move(myC.Id, defenseTarget.Id, myC.Troups));
                         }
@@ -341,14 +341,24 @@ class Player
                             Console.Error.WriteLine(".. bmber = " + bomber);
                             actions[bomber.Id].Clear();
                             actions[bomber.Id].Add(Action.Bomb(bomber.Id, bomberDest.Id));
-                            
                             bombsLeft--;                            
                         }
                     }
                 }
             }else {
                 Console.Error.WriteLine(" -----  GOING FOR MOVES ----- ");                
-                // TODO:  figure out if there are any more move for reinforcements etc.                
+                // TODO:  figure out if there are any more move for reinforcements etc. 
+                /*if(tests.Count > 0) {
+                    foreach(var mv in tests)
+                        Console.Write("MOVE {0} {1} {2};", mv.Item1, mv.Item2, mv.Item3 + 1);
+                }else {
+                    //var bestIC = myInteriorCells.OrderBy(ic => -ic.Troups).FirstOrDefault();
+                    //if(bestIC != null) {       
+                    //    var bestMove = bestIC.Links.Values.OrderBy(l => ShortestDist(l.A.Id, l.A.ClosestEnemy.Id));
+                    //}else {                
+                        Console.Write("WAIT;");
+                    //}
+                }*/
             }
             
             string msg = "(@)";
@@ -368,16 +378,17 @@ class Player
                 }
                 Console.Error.WriteLine();
             }
-            
+
             var output = Action.Combine(actions.Values.SelectMany(v => v));
             output += "MSG " + msg;
             Console.WriteLine(output);
         }
     }
     
-    
     private static Cell GetBestPathFwd(int from, int to, Dictionary<int, Cell> cells) {
         var sp = ShortestPath(from, to, cells); 
+        return sp[0].B; // just return the first link.. 
+        /* more complex decision tree..
         if (sp[0].B.Owner == ME) return sp[0].B;
         if (sp.Count > 1) {            
             foreach(var pLink in sp) {
@@ -388,8 +399,9 @@ class Player
             }   
         }
         return cells[to];
+        */
     }
-    
+
     private static Cell FindDefensiveTarget(IEnumerable<Cell> cells, Cell myCell) {
         var defenseTarget = cells.Where(oc => oc.Capacity >= 2)
                                     .OrderBy(oc => -oc.Capacity)
