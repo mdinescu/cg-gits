@@ -73,6 +73,29 @@ class Player
         public int Owner { get; set; }
     }
     
+    class Action {
+        public Action (String verb, int from, int to) {
+            Verb = verb; From = from; To = to;
+        }
+        public String Verb { get; set; }
+        public int From { get; set; }
+        public int To { get; set; }
+        public int Count { get; set; }
+        public static Action Move(int from, int to, int cnt) { return new Action("MOVE", from, to) { Count = cnt }; }
+        public static Action Bomb(int from, int to) { return new Action("BOMB", from, to); }
+        public static Action Inc(int id) { return new Action("INC", id, 0); }
+        public override String ToString() { return Verb + " " + From + " " + To + (Count > 0 ? (" " + Count) : ""); }
+        
+        public static String Combine(IEnumerable<Action> actions) {
+            if(actions == null) return "WAIT;";
+            var sb = new StringBuilder();
+            foreach(var action in actions) {
+                sb.Append(action.ToString());
+                sb.Append(";");
+            }
+            return sb.ToString();
+        }
+    }
     
     static void ComputeShortestPaths(Dictionary<int, Cell> cells) {
         int N = cells.Count; int MXX = int.MaxValue;
@@ -238,10 +261,21 @@ class Player
             var myCells = cells.Values.Where(c => c.Owner == ME && c.Troups > 0).OrderBy(c => -c.Troups);
             var othCells = cells.Values.Where(c => c.Owner != ME);
             
-            var tests = new List<Tuple<int,int, int>>();
+            var actions = new Dictionary<int, List<Action>>();
             
+            foreach(var myC in myCells) {                
+                actions.Add(myC.Id, new List<Action>());                
+            }
             
             foreach(var myC in myCells) {
+                if(incomingT.ContainsKey(myC.Id)) {
+                    var underAttack = incomingT[myC.Id].Where(t => t.Owner != ME).OrderBy(t => t.Time);
+                    var firstWave = underAttack.FirstOrDefault();
+                    if (firstWave != null) {
+                        Console.Error.WriteLine(myC + " under attack in " + firstWave.Time + " w/ " + firstWave.Size + " (total incoming = " + underAttack.Sum(t => t.Size) + ")");
+                    }
+                }
+                
                 var interestingLinks = myC.Links.Values
                                         .Where(l => l.B.Owner != ME && l.B.Troups < myC.Troups && l.B.Capacity > 0)
                                         .OrderBy(l => -l.B.Capacity)
@@ -255,7 +289,7 @@ class Player
                     if(il.B.Troups + il.B.Capacity + reserve < troupsLeft) {
                         var sp = GetBestPathFwd(myC.Id, il.B.Id, cells);                    
                         
-                        tests.Add(Tuple.Create(myC.Id, sp.Id, il.B.Troups + il.B.Capacity));
+                        actions[myC.Id].Add(Action.Move(myC.Id, sp.Id, il.B.Troups + il.B.Capacity));
                         troupsLeft -= (il.B.Troups+1);
                     }
                     if(troupsLeft <= reserve)
@@ -281,15 +315,15 @@ class Player
             
             
             if(newBomb) {
-                Console.Error.WriteLine(" -----  GOING FOR DEFENSE ----- ");
-                
+                Console.Error.WriteLine(" -----  GOING FOR DEFENSE ----- ");            
                 var defenseTarget = FindDefensiveTarget(othCells, null);
                 
                 if(defenseTarget != null) {                    
-                    foreach(var myC in myCells) {
+                    foreach(var myC in myCells) {                        
                         defenseTarget = FindDefensiveTarget(othCells, myC);
                         if(myC.Troups > 0) {
-                            Console.Write("MOVE {0} {1} {2};", myC.Id, defenseTarget.Id, myC.Troups);
+                            actions[myC.Id].Clear();
+                            actions[myC.Id].Add(Action.Move(myC.Id, defenseTarget.Id, myC.Troups));
                         }
                     }
                 }
@@ -305,28 +339,19 @@ class Player
                                     .FirstOrDefault();
                         if(bomber != null) {                            
                             Console.Error.WriteLine(".. bmber = " + bomber);
-                            Console.Write("BOMB {0} {1};", bomber.Id, bomberDest.Id);
+                            actions[bomber.Id].Clear();
+                            actions[bomber.Id].Add(Action.Bomb(bomber.Id, bomberDest.Id));
+                            
                             bombsLeft--;                            
                         }
                     }
                 }
             }else {
-                Console.Error.WriteLine(" -----  GOING FOR MOVES ----- ");
-                
-                if(tests.Count > 0) {
-                    foreach(var mv in tests)
-                        Console.Write("MOVE {0} {1} {2};", mv.Item1, mv.Item2, mv.Item3 + 1);
-                }else {
-                    //var bestIC = myInteriorCells.OrderBy(ic => -ic.Troups).FirstOrDefault();
-                    //if(bestIC != null) {       
-                    //    var bestMove = bestIC.Links.Values.OrderBy(l => ShortestDist(l.A.Id, l.A.ClosestEnemy.Id));
-                    //}else {                
-                        Console.Write("WAIT;");
-                    //}
-                }
+                Console.Error.WriteLine(" -----  GOING FOR MOVES ----- ");                
+                // TODO:  figure out if there are any more move for reinforcements etc.                
             }
             
-            string msg = "done";
+            string msg = "(@)";
             if(firstBombSite != null) {
                     Console.Error.WriteLine("First choice for bombing: {0}", firstBombSite);
                     //var origin = myCells.Where(c => !tests.Any(t => t.Item1 == c.Id))
@@ -336,7 +361,17 @@ class Player
                     msg = "" + firstBombSite.Id;
             }
             
-            Console.WriteLine("MSG " + msg);
+            foreach(var aList in actions) {
+                Console.Error.Write(aList.Key + ": ");
+                foreach(var a in aList.Value) {
+                    Console.Error.Write(a + " ");
+                }
+                Console.Error.WriteLine();
+            }
+            
+            var output = Action.Combine(actions.Values.SelectMany(v => v));
+            output += "MSG " + msg;
+            Console.WriteLine(output);
         }
     }
     
