@@ -83,7 +83,14 @@ class Player
         public static Action Move(int from, int to, int cnt) { return new Action("MOVE", from, to) { Count = cnt }; }
         public static Action Bomb(int from, int to) { return new Action("BOMB", from, to); }
         public static Action Inc(int id) { return new Action("INC", id, 0); }
-        public override String ToString() { return Verb + " " + From + " " + To + (Count > 0 ? (" " + Count) : ""); }
+        public override String ToString() { 
+            if(Verb == "MOVE")
+                return "MOVE " + From + " " + To + " " + Count; 
+            else if(Verb == "BOMB")
+                return "BOMB " + From + " " + To;
+            else
+                return "INC " + From;
+        }
         
         public static String Combine(IEnumerable<Action> actions) {
             if(actions == null) return "WAIT;";
@@ -184,7 +191,7 @@ class Player
         var myBombs = new List<Bomb>();
         var enemyBombs = new List<Bomb>();
         
-        var newBomb = false;
+        var newBomb = false; int turnCnt = 0;
         // game loop
         while (true)
         {
@@ -276,7 +283,7 @@ class Player
                 }
 
                 var interestingLinks = myC.Links.Values
-                                        .Where(l => l.B.Owner != ME && l.B.Troups < myC.Troups)
+                                        .Where(l => l.B.Owner != ME && l.B.Troups < myC.Troups && l.B.Capacity > 0)
                                         .OrderBy(l => -l.B.Capacity)
                                         .ThenBy(l => ShortestDist(myC.Id, l.B.Id))
                                         .ThenBy(l => l.B.Troups);
@@ -292,17 +299,11 @@ class Player
                     }
                     if(troupsLeft <= reserve)
                         break;
-                }                
-            }
-            
-            
-            Cell firstBombSite = null;
-            if(bombsLeft > 0) {
-                // if I have any bombs left, look through potential destinations
-                var firstChoice = othCells
-                                    .Where(c => c.Owner == CPU && c.Troups >= 10)
-                                    .OrderBy(c => -c.Capacity).ThenBy(c => -c.Troups)
-                                    .FirstOrDefault();                
+                }
+                
+                if(troupsLeft > 10 && myC.Capacity < 3) {
+                    actions[myC.Id].Add(Action.Inc(myC.Id));
+                }
             }
             
             //var myInteriorCells = myCells.Where(c => c.Links.Values.All(l => l.B.Owner == ME));
@@ -359,6 +360,27 @@ class Player
                 }*/
             }
             
+            Cell firstBombSite = null;
+            if(bombsLeft > 1) {
+                // if I have any bombs left, look through potential destinations
+                firstBombSite = othCells
+                                    .Where(c => c.Owner == CPU && (c.Capacity == 3 || (c.Troups >= 10 && c.Capacity > 1)))
+                                    .OrderBy(c => -c.Capacity).ThenBy(c => -c.Troups)
+                                    .FirstOrDefault();
+                                    
+                if(firstBombSite != null && turnCnt > 15) {
+                    Console.Error.WriteLine(" [CONSIDER THE BOMB TO: " + firstBombSite + "]");
+                    
+                    var bombFrom = myCells.OrderBy(c => c.Capacity)
+                                    .ThenBy(c => c.Links[firstBombSite.Id].Dist)
+                                    .ThenBy(c => actions[c.Id].Count)
+                                    .FirstOrDefault();
+                    actions[bombFrom.Id].Clear();
+                    actions[bombFrom.Id].Add(Action.Bomb(bombFrom.Id,firstBombSite.Id));
+                    bombsLeft--;
+                }
+            }
+            
             string msg = "(@)";
             if(firstBombSite != null) {
                     Console.Error.WriteLine("First choice for bombing: {0}", firstBombSite);
@@ -379,7 +401,7 @@ class Player
 
             var output = Action.Combine(actions.Values.SelectMany(v => v));
             output += "MSG " + msg;
-            Console.WriteLine(output);
+            Console.WriteLine(output); turnCnt++;
         }
     }
     
