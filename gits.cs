@@ -38,6 +38,7 @@ class Player
         public int Owner { get; set; }
         public int Troups { get; set; }
         public int Capacity { get; set; }
+        public int Offline { get; set; }
         
         public Cell ClosestEnemy { get; set; }
         
@@ -193,6 +194,8 @@ class Player
         
         var newBomb = false; int turnCnt = 0;
         // game loop
+        
+        int myScore = 0; int cpuScore = 0;        
         while (true)
         {
             int entityCount = int.Parse(Console.ReadLine()); // the number of entities (e.g. factories and troops)
@@ -200,7 +203,7 @@ class Player
             myTroups.Clear(); enemyTroups.Clear();
             incomingT.Clear(); outgoingT.Clear();
             
-            newBomb = false; var allBombs = new List<Bomb>();
+            newBomb = false; var allBombs = new List<Bomb>(); myScore = 0; cpuScore = 0;
             for (int i = 0; i < entityCount; i++)
             {
                 inputs = Console.ReadLine().Split(' ');
@@ -215,7 +218,10 @@ class Player
                     cells[entityId].Owner = arg1;
                     cells[entityId].Troups = arg2;
                     cells[entityId].Capacity = arg3;
-                    //Console.Error.WriteLine("E{0}.{1}: {2},{3},{4},{5}", entityType, entityId, arg1, arg2, arg3, arg4);                    
+                    cells[entityId].Offline = arg4;
+                    Console.Error.WriteLine("E{0}.{1}: {2},{3},{4},{5}", entityType, entityId, arg1, arg2, arg3, arg4);                    
+                    if(arg1 == ME) myScore += arg2;
+                    else if(arg1 == CPU) cpuScore += arg2;        
                 }else if(entityType == TROUP) {
                     Troup t = new Troup(entityId);
                     t.Owner = arg1;
@@ -226,8 +232,10 @@ class Player
                     
                     if(t.Owner == ME) {
                         myTroups.Add(t);
+                        myScore += arg4;
                     }else {
                         enemyTroups.Add(t);
+                        cpuScore += arg4;
                     }
                     if(!incomingT.ContainsKey(t.To)) incomingT.Add(t.To, new List<Troup>()); 
                     incomingT[t.To].Add(t);
@@ -263,10 +271,11 @@ class Player
             }
             
             
-            Console.Error.WriteLine("-------------------------");            
-            var myCells = cells.Values.Where(c => c.Owner == ME && c.Troups > 0).OrderBy(c => -c.Troups);
-            var othCells = cells.Values.Where(c => c.Owner != ME);
+            Console.Error.WriteLine("----[ {0:D3} ]  vs   [ {1:D3} ]---", myScore, cpuScore);            
+            var myCells = cells.Values.Where(c => c.Owner == ME).OrderBy(c => -c.Troups).ToList();
+            var othCells = cells.Values.Where(c => c.Owner != ME).ToList();
             
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
             var actions = new Dictionary<int, List<Action>>();
             
             foreach(var myC in myCells) {
@@ -274,34 +283,52 @@ class Player
             }
             
             foreach(var myC in myCells) {
+                int totalIncoming = 0;
+                int troupsLeft = myC.Troups; int reserve = myC.Capacity;
+                int futureTroups = troupsLeft; int lastTime = 0;
+                
                 if(incomingT.ContainsKey(myC.Id)) {
                     var underAttack = incomingT[myC.Id].Where(t => t.Owner != ME).OrderBy(t => t.Time);
                     var firstWave = underAttack.FirstOrDefault();
                     if (firstWave != null) {
-                        Console.Error.WriteLine(myC + " under attack in " + firstWave.Time + " w/ " + firstWave.Size + " (total incoming = " + underAttack.Sum(t => t.Size) + ")");
+                        totalIncoming = underAttack.Sum(t => t.Size);
+                        Console.Error.WriteLine(myC + " under attack in " + firstWave.Time + " w/ " + firstWave.Size + " (total incoming = " + totalIncoming + ")");
+                    }           
+                
+                    foreach(var incoming in underAttack) {
+                        if(lastTime < incoming.Time) {
+                            futureTroups += myC.Capacity * incoming.Time;
+                            lastTime = incoming.Time;
+                        }
+                        futureTroups -= incoming.Size;
+                        if(futureTroups <= 0) break;
+                    }
+                    
+                    if(futureTroups <= 0) {
+                        Console.Error.WriteLine("I will loose factory " + myC.Id);
                     }
                 }
-
+                
                 var interestingLinks = myC.Links.Values
-                                        .Where(l => l.B.Owner != ME && l.B.Troups < myC.Troups && l.B.Capacity > 0)
+                                        .Where(l => l.B.Owner != ME && l.B.Troups < futureTroups && l.B.Capacity > 0)
                                         .OrderBy(l => -l.B.Capacity)
                                         .ThenBy(l => ShortestDist(myC.Id, l.B.Id))
                                         .ThenBy(l => l.B.Troups);
-                
-                int troupsLeft = myC.Troups; int reserve = myC.Capacity;
                      
                 foreach(var il in interestingLinks) {                        
                     Console.Error.WriteLine("{0} troups = {1}, capacity = {2} -> {3}", myC, myC.Troups, myC.Capacity, il);
-                    if(il.B.Troups + reserve < troupsLeft) {
+                    int extra = il.B.Owner == CPU ? il.B.Capacity : 0;
+                    int holdBack = myC.Capacity < il.B.Capacity ? 0 : myC.Capacity - il.B.Capacity;
+                    if(il.B.Troups + holdBack + extra < troupsLeft) {
                         var sp = ShortestPath(myC.Id, il.B.Id, cells);                    
-                        actions[myC.Id].Add(Action.Move(myC.Id, sp[0].B.Id, il.B.Troups + 1));
-                        troupsLeft -= (il.B.Troups+1);
+                        actions[myC.Id].Add(Action.Move(myC.Id, sp[0].B.Id, il.B.Troups + 1 + extra));
+                        futureTroups -= (il.B.Troups+1);
                     }
-                    if(troupsLeft <= reserve)
+                    if(futureTroups <= reserve)
                         break;
                 }
                 
-                if(troupsLeft > 10 && myC.Capacity < 3) {
+                if(futureTroups > 10 && myC.Capacity < 3) {
                     actions[myC.Id].Add(Action.Inc(myC.Id));
                 }
             }
@@ -313,7 +340,7 @@ class Player
             
             
             
-            if(newBomb) {
+            if(enemyBombs.Count > 0) {
                 Console.Error.WriteLine(" -----  GOING FOR DEFENSE ----- ");
                 var defenseTarget = FindDefensiveTarget(othCells, null);
                 
@@ -326,10 +353,15 @@ class Player
                         }
                     }
                 }
+            }
                 
+            if(newBomb) {    
                 if(bombsLeft > 0 && newBomb) {
                     Console.Error.WriteLine("looing for a bomb stgy");
-                    var bomberDest = othCells.Where(oc => oc.Owner == CPU).OrderBy(oc => -oc.Capacity).FirstOrDefault();
+                    var bomberDest = othCells.Where(oc => oc.Owner == CPU && oc.Offline == 0
+                                                        && (myBombs.Count == 0 || myBombs[0].To != oc.Id))
+                                             .OrderBy(oc => -oc.Capacity)
+                                             .FirstOrDefault();
                     if(bomberDest != null) {
                         Console.Error.WriteLine(".. bmb dest = " + bomberDest);
                         var bomber = myCells
@@ -361,27 +393,32 @@ class Player
             }
             
             Cell firstBombSite = null;
-            if(bombsLeft > 1) {
+            if(bombsLeft > 0) {
                 // if I have any bombs left, look through potential destinations
                 firstBombSite = othCells
-                                    .Where(c => c.Owner == CPU && (c.Capacity == 3 || (c.Troups >= 10 && c.Capacity > 1)))
+                                    .Where(c => c.Owner == CPU 
+                                            && (c.Capacity == 3 || (c.Troups >= 10 && c.Capacity > 1))
+                                            && c.Offline == 0
+                                            && (myBombs.Count == 0 || myBombs[0].To != c.Id))
                                     .OrderBy(c => -c.Capacity).ThenBy(c => -c.Troups)
                                     .FirstOrDefault();
-                                    
-                if(firstBombSite != null && turnCnt > 15) {
+                                
+                if(firstBombSite != null && (myScore < cpuScore-1 || turnCnt > 15)) {
                     Console.Error.WriteLine(" [CONSIDER THE BOMB TO: " + firstBombSite + "]");
                     
                     var bombFrom = myCells.OrderBy(c => c.Capacity)
                                     .ThenBy(c => c.Links[firstBombSite.Id].Dist)
                                     .ThenBy(c => actions[c.Id].Count)
                                     .FirstOrDefault();
+                    Console.Error.WriteLine("consider to bomb from " + bombFrom.Id);
                     actions[bombFrom.Id].Clear();
                     actions[bombFrom.Id].Add(Action.Bomb(bombFrom.Id,firstBombSite.Id));
                     bombsLeft--;
                 }
             }
             
-            string msg = "(@)";
+            string msg = "(" + stopWatch.Elapsed.TotalMilliseconds + ")";
+            stopWatch.Reset();
             if(firstBombSite != null) {
                     Console.Error.WriteLine("First choice for bombing: {0}", firstBombSite);
                     //var origin = myCells.Where(c => !tests.Any(t => t.Item1 == c.Id))
