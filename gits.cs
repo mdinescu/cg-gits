@@ -7,6 +7,7 @@ using System.Collections.Generic;
 
 class Player
 {
+    public static int MY_SIDE = 1;
     public static int ME = 1;
     public static int CPU = -1;
     public static string FACTORY = "FACTORY";
@@ -270,10 +271,14 @@ class Player
                 cells[i].ClosestEnemy = closestEnemy;
             }
             
-            
             Console.Error.WriteLine("----[ {0:D3} ]  vs   [ {1:D3} ]---", myScore, cpuScore);            
             var myCells = cells.Values.Where(c => c.Owner == ME).OrderBy(c => -c.Troups).ToList();
             var othCells = cells.Values.Where(c => c.Owner != ME).ToList();
+            
+            if(turnCnt == 0) {
+                MY_SIDE = myCells[0].Id % 2; 
+                Console.Error.WriteLine("I'm on " + (MY_SIDE != 0 ? "LEFT" : "RIGHT"));            
+            }
             
             var stopWatch = System.Diagnostics.Stopwatch.StartNew();
             var actions = new Dictionary<int, List<Action>>();
@@ -457,9 +462,11 @@ class Player
     }
 
     private static Cell FindDefensiveTarget(IEnumerable<Cell> cells, Cell myCell) {
-        var defenseTarget = cells.Where(oc => oc.Capacity >= 2)
-                                    .OrderBy(oc => -oc.Capacity)
+        // first check if there is a                
+        var defenseTarget = cells.Where(oc => oc.Capacity >= 1 && oc.Owner == 0)
+                                    .OrderBy(oc => -oc.Capacity)                                    
                                     .ThenBy(oc => oc.Troups)
+                                    .ThenBy(oc => ((oc.Id % 2) == MY_SIDE?0:1))
                                     // potentially leave this empty
                                     .ThenBy(oc => myCell != null ? oc.Links[myCell.Id].Dist : -oc.Owner)
                                     .FirstOrDefault();
@@ -467,6 +474,7 @@ class Player
             defenseTarget = cells.Where(oc => oc.Capacity > 0)
                             .OrderBy(oc => -oc.Capacity)
                             .ThenBy(oc => oc.Troups)
+                            .ThenBy(oc => ((oc.Id % 2) == MY_SIDE?0:1))
                             // potentially leave this empty
                             .ThenBy(oc => myCell != null ? oc.Links[myCell.Id].Dist : -oc.Owner)
                             .FirstOrDefault();
