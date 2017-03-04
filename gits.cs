@@ -32,13 +32,11 @@ class Player
             Id = id;
             Incoming = new List<Troup>();
             Reinforcements = new List<Troup>();
-            Outgoing = new List<Troup>();
         }
         
         public int Id { get;set; }
         public List<Troup> Incoming { get; }
-        public List<Troup> Reinforcements { get; }
-        public List<Troup> Outgoing { get; } 
+        public List<Troup> Reinforcements { get; } 
         public int Owner { get; set; }
         public int Troups { get; set; }
         public int Capacity { get; set; }
@@ -46,8 +44,10 @@ class Player
         
         public void UpdateTroups(IEnumerable<Troup> mine, IEnumerable<Troup> opponent) {
             Reinforcements.AddRange(mine.Where(t => t.To == Id).OrderBy(t => t.Time));
-            Incoming.AddRange(opponent.Where(t => t.To == Id).OrderBy(t => t.Time));
-            Outgoing.AddRange(mine.Where(t => t.From == Id).OrderBy(t => t.Time));            
+            Incoming.AddRange(opponent.Where(t => t.To == Id).OrderBy(t => t.Time)); 
+            if(Id == 8) {
+                Console.Error.WriteLine(" {0} incoming and {1} friendly troops incoming to {2}", Incoming.Count, Reinforcements.Count, Id);
+            }
         }
         public int CountIncoming() {            // troups that will be in this cell across all turns
             return Incoming.Sum(t => t.Size);
@@ -59,13 +59,74 @@ class Player
             return Reinforcements.Where(t => t.Time <= turn).Sum(t => t.Size);
         }
 
+        public Cell PlayForward() {
+            Cell cell = new Cell(Id) {
+                Owner = this.Owner, Offline = Math.Max(this.Offline-1,0), Capacity = this.Capacity, Troups = this.Troups
+            };
+            
+            // on next turn, increase production at factory first, if there is production
+            if(cell.Owner != 0) {
+                cell.Troups += cell.Capacity;
+            }
+            
+            //if(cell.Id == 8) {
+            //    Console.Error.WriteLine(": {0} play fwd -> {1} enemies and {2} friendlies incoming..", cell, Incoming.Count, Reinforcements.Count);
+            //}
+                
+            int enemyCnt = 0;
+            foreach(var oldTroup in Incoming) {
+                var newTroup = oldTroup.Copy(true);
+                if (newTroup.Time > 0) cell.Incoming.Add(newTroup);
+                else enemyCnt += newTroup.Size;
+            }
+            int friendlyCnt = 0;
+            foreach(var oldTroup in Reinforcements) {
+                var newTroup = oldTroup.Copy(true);
+                if (newTroup.Time > 0) cell.Reinforcements.Add(newTroup);
+                else friendlyCnt += newTroup.Size;
+            }
+
+            if (enemyCnt > 0 || friendlyCnt > 0) {
+                //if(cell.Id == 8) {
+                //    Console.Error.WriteLine(": {0} has {1} enemies and {2} friendlies incoming..", cell, enemyCnt, friendlyCnt);
+                //}
+                int unitsLost = Math.Min(enemyCnt, friendlyCnt);            
+                enemyCnt -= unitsLost; friendlyCnt -= unitsLost;
+                
+                if(cell.Owner == 0) { // neutral cell
+                    if (friendlyCnt > cell.Troups) {
+                        cell.Owner = ME; cell.Troups = friendlyCnt - cell.Troups;
+                    }else if (enemyCnt > cell.Troups) {
+                        cell.Owner = CPU; cell.Troups = enemyCnt - cell.Troups;
+                    }
+                }else if(cell.Owner == ME) { // friendly cell
+                    if (friendlyCnt > 0) {
+                        cell.Troups += friendlyCnt;
+                    }else if(enemyCnt > cell.Troups) {
+                        cell.Owner = CPU; cell.Troups = enemyCnt - cell.Troups;
+                    }else {
+                        cell.Troups = cell.Troups - enemyCnt;
+                    }
+                }else{ // enemy cell
+                    if (enemyCnt > 0) {
+                        cell.Troups += enemyCnt;
+                    }else if(friendlyCnt > cell.Troups) {
+                        cell.Owner = ME; cell.Troups = friendlyCnt - cell.Troups;
+                    }else {
+                        cell.Troups = cell.Troups - friendlyCnt;
+                    }
+                }
+            } 
+            return cell;         
+        }
+
         public override string ToString() {
             return String.Format("C.{0}", Id);
         }
     }
     class Troup {
-        public Troup(int id) {
-            Id = id;
+        public Troup(int id, int owner, int from, int to, int size, int time) {
+            Id = id; Owner = owner; From = from; To = to; Size = size; Time = time;
         }
         public int Id { get;set; }
         public int Owner { get;set; }
@@ -74,6 +135,9 @@ class Player
         public int Size { get;set; }
         public int Time { get; set; }
         
+        public Troup Copy(bool passTime) {
+            return new Troup(Id, Owner, From, To, Size, passTime ? Math.Max(Time-1,0) : Time);
+        }
         public override string ToString() {
             return String.Format("T({0} from {1} to {2})", Size, From, To);
         }
@@ -243,7 +307,7 @@ class Player
                     ctx.Cells[entityId].Offline = arg4;
                     //Console.Error.WriteLine("E{0}.{1}: {2},{3},{4},{5}", entityType, entityId, arg1, arg2, arg3, arg4);                     
                 }else if(entityType == TROUP) {
-                    var trp = new Troup(entityId) { Owner = arg1, From = arg2, To = arg3, Size = arg4, Time = arg5 };                    
+                    var trp = new Troup(entityId, arg1, arg2, arg3, arg4, arg5);                     
                     if(trp.Owner == ME) {
                         ctx.MyTroups.Add(trp);                        
                     }else {
@@ -268,6 +332,9 @@ class Player
             }
             
             foreach(var cell in ctx.Cells) {
+                if(cell.Id == 8) {
+                    Console.Error.WriteLine(" -> update {0} troups: {1} mine, {2} enemy ", cell, ctx.MyTroups.Count(), ctx.EnemyTroups.Count());
+                }
                 cell.UpdateTroups(ctx.MyTroups, ctx.EnemyTroups);
             }
             ctx.UpdateScore();
@@ -389,6 +456,11 @@ class Player
                      
                 foreach(var ic in interestingCells) {                        
                     Console.Error.WriteLine("{0} troups = {1}, capacity = {2} -> {3}", myC, myC.Troups, myC.Capacity, ic);
+                    if(ctx.MyBombs.Any(b => b.To == ic.Id && b.Time > map.ShortestDist(myC.Id, ic.Id))) {
+                        Console.Error.WriteLine(" ignoring {0} due to bomb coming after..");
+                        break;
+                    }
+                    
                     int extra = ic.Owner == CPU ? ic.Capacity : 0;
                     int holdBack = myC.Capacity < ic.Capacity ? 0 : myC.Capacity - ic.Capacity;
                     if(ic.Troups + holdBack + extra < troupsLeft) {
@@ -435,29 +507,49 @@ class Player
                         }
                     }
                 }
-
-                /*
-                var defenseTarget = FindDefensiveTarget(null, ctx, map);
-                
-                if(defenseTarget != null) {                    
-                    foreach(var myC in myCells) {
-                        if(myC.Troups > 0) {
-                            defenseTarget = FindDefensiveTarget(myC, ctx, map);
-                            actions[myC.Id].Clear();
-                            actions[myC.Id].Add(Action.Move(myC.Id, defenseTarget.Id, myC.Troups));
-                        }
-                    }
-                }
-                */
             }
 
             int bombsLeft = ctx.MyBombsLeft;
             bool newBomb = ctx.EnemyBombs.Any(b => b.Delta == 0); // there's at least one enemy bomb launched this turn!   
             if(newBomb) {    
                 if(bombsLeft > 0) {
-                    Console.Error.WriteLine("looing for a bomb stgy");
+                    Console.Error.WriteLine("looking for a bomb stgy");
+                    var myOtherBomb = ctx.MyBombs.FirstOrDefault();
+
+                    // first aim for the largest enemy factory by production and # of troups
+                    //  +
+                    //    int damageScore = Math.Min(cell.Troups, Math.Max(10, cell.Troups / 2)) + cell.Capacity * 5;
+
+                    // look for neutral cells that would be taken by enemy by the time the bomb is deployed
+                    //  -
+                    //    int sacrificedTroups = sum(troups-in-transit-to-target, where arrival time == explosion-time)
+                    
+                    // evalOwnership(cell, at-arrival, based on troups in trasit)
+                    var bombSites = new Dictionary<Tuple<Cell, Cell>, int>();
+                    foreach(var bomber in myCells.Where(c => myOtherBomb == null || myOtherBomb.From != c.Id)) {
+                        // based on the selected bomber..
+                        var bombSite = othCells.Where(c => (myOtherBomb == null || myOtherBomb.To != c.Id))
+                                    .Select(c => EvaluateOwnership(c, map.Dist(c.Id, bomber.Id)))
+                                    .Where(c => c.Owner == CPU && c.Offline == 0)
+                                    .OrderBy(c => -(Math.Min(c.Troups, Math.Max(10, c.Troups / 2)) + c.Capacity * 5))
+                                    .FirstOrDefault();
+                        bombSites.Add(Tuple.Create(bombSite, bomber), Math.Min(bombSite.Troups, Math.Max(10, bombSite.Troups / 2)) + bombSite.Capacity * 5);
+                    }
+
+                    if(bombSites.Count > 0) {
+                        // pick the best one out of all options
+                        var mostDamage = bombSites.OrderBy(kv => -kv.Value).First();
+                        var bomber = mostDamage.Key.Item2;
+                        var bombSite = mostDamage.Key.Item1;
+                        Console.Error.WriteLine(".. bmb site = " + bombSite);
+                        Console.Error.WriteLine(".. bmber = " + bomber);
+                        actions[bomber.Id].Add(Action.Bomb(bomber.Id, bombSite.Id));
+                        bombsLeft--;
+                    }
+
+                    /*
                     var bomberDest = othCells.Where(oc => oc.Owner == CPU && oc.Offline == 0
-                                                        && (ctx.MyBombs.Count() == 0 || ctx.MyBombs.First().To != oc.Id))
+                                                        && (myOtherBomb == null || myOtherBomb.To != oc.Id))
                                              .OrderBy(oc => -oc.Capacity)
                                              .FirstOrDefault();
                     if(bomberDest != null) {
@@ -473,9 +565,9 @@ class Player
                             bombsLeft--;                            
                         }
                     }
+                    */
                 }
             }
-            
             
             if (bombsLeft > 0) {
                 Cell firstBombSite = null;
@@ -520,6 +612,19 @@ class Player
             Console.WriteLine(output);
             previousCtx = ctx;
         }
+    }
+
+    private static Cell EvaluateOwnership(Cell cell, int turns) {
+        //if(cell.Id == 8) 
+        //    Console.Error.WriteLine(": eval {0} in {1} turns", cell, turns);
+        Cell lastState = cell;
+        for(int i = 0; i < turns; i++) {
+            var newState = lastState.PlayForward();
+            lastState = newState;            
+        }
+        //if(cell.Id == 8)
+        //    Console.Error.WriteLine(":: {0} after {1} turns will be owned by {2} and have {3} troups", cell, turns, lastState.Owner, lastState.Troups);
+        return lastState;
     }
 
     private static Cell FindDefensiveTarget(Cell fromCell, Context ctx, Map map) {
