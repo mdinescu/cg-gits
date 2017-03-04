@@ -79,23 +79,23 @@ class Player
         }
     }
     class Bomb {
-        public Bomb(int id, int owner, int from, int time, int to) {
-            Id = id; Owner = owner; From = from; Time = time; To = to; OriginalTime = time;
+        public Bomb(int id, int owner, int from) {
+            Id = id; Owner = owner; From = from; Time = -1; To = -1;
         }
-        public Bomb(int id, int owner, int from, int time) {
-            Id = id; Owner = owner; From = from; Time = time; To = -1; OriginalTime = time;
+        public Bomb(int id, int owner, int from, int to, int time) {
+            Id = id; Owner = owner; From = from; Time = time; To = to;
         }
         
         public int Id { get; private set; }
         public int From { get; private set; }
         public int To { get; private set; }
         public int Time { get; private set; }
-        public int OriginalTime { get; private set; }
+        public int Delta { get; private set; }  // how many turns has this bomb been around
         public int Owner { get; private set; }
 
         public Bomb Copy(bool passTime) {
-            var copy = new Bomb(Id, Owner, From, Time - (passTime ? 1 : 0), To);
-            copy.OriginalTime = this.OriginalTime;
+            var copy = new Bomb(Id, Owner, From, Time, To);
+            copy.Delta = this.Delta + (passTime ? 1 : 0);
             return copy;
         }
     }
@@ -222,6 +222,9 @@ class Player
                 ctx.Turn = previous.Turn + 1;
                 ctx.MyBombsLeft = previous.MyBombsLeft;
                 ctx.EnemyBombsLeft = previous.EnemyBombsLeft;
+            } else {
+                ctx.MyBombsLeft = 2;
+                ctx.EnemyBombsLeft = 2;
             }
                         
             int entityCount = int.Parse(tr.ReadLine());
@@ -238,7 +241,7 @@ class Player
                     ctx.Cells[entityId].Troups = arg2;
                     ctx.Cells[entityId].Capacity = arg3;
                     ctx.Cells[entityId].Offline = arg4;
-                    Console.Error.WriteLine("E{0}.{1}: {2},{3},{4},{5}", entityType, entityId, arg1, arg2, arg3, arg4);                     
+                    //Console.Error.WriteLine("E{0}.{1}: {2},{3},{4},{5}", entityType, entityId, arg1, arg2, arg3, arg4);                     
                 }else if(entityType == TROUP) {
                     var trp = new Troup(entityId) { Owner = arg1, From = arg2, To = arg3, Size = arg4, Time = arg5 };                    
                     if(trp.Owner == ME) {
@@ -248,11 +251,11 @@ class Player
                     }
                 }else {                
                     Console.Error.WriteLine("E{0}.{1}: {2},{3},{4},{5}", entityType, entityId, arg1, arg2, arg3, arg4);
-                    var bmb = new Bomb(entityId, arg1, arg2, arg4, arg3);
+                    var bmb = new Bomb(entityId, arg1, arg2, arg3, arg4);
                     var sameBomb = previous.Bombs.Where(b => b.Id == bmb.Id).FirstOrDefault();
                     if(sameBomb != null) { 
-                        if(sameBomb.Time != bmb.Time) Console.Error.WriteLine("!!!ERROR same bomb {0} time {1} != {2}", bmb.Id, bmb.Time, sameBomb.Time);
-                        ctx.Bombs.Add(sameBomb.Copy(true)); // add the one from previous turn because we want to know the OriginalTime
+                        if(sameBomb.From != bmb.From) Console.Error.WriteLine("!!!ERROR same bomb {0}: from {1} != {2}", bmb.Id, bmb.From, sameBomb.From);
+                        ctx.Bombs.Add(sameBomb.Copy(true)); // add the one from previous turn because we want to keep track of the Delta
                     }else {
                         ctx.Bombs.Add(bmb);
                         if (bmb.Owner == ME) {
@@ -324,12 +327,7 @@ class Player
         
         List<Troup> myTroups = new List<Troup>();
         List<Troup> enemyTroups = new List<Troup>();
-        var incomingT = new Dictionary<int, List<Troup>>();
-        var outgoingT = new Dictionary<int, List<Troup>>();
-        
-        var myBombs = new List<Bomb>();
-        var enemyBombs = new List<Bomb>();
-        
+
         int myScore = 0; int cpuScore = 0;
 
         var stopWatch = System.Diagnostics.Stopwatch.StartNew();
@@ -409,6 +407,36 @@ class Player
             
             if(ctx.EnemyBombs.Count() > 0) {                
                 Console.Error.WriteLine(" -----  INCOMING BOMBS ----- ");
+                // -- check if any of the enemy bombs could be headed to each cell 
+                var bombTargets = new HashSet<int>();
+                foreach(var eb in ctx.EnemyBombs) {
+                    foreach(var myC in myCells) {
+                        int dist = map.Dist(myC.Id, eb.From);
+                        if (dist == eb.Delta + 1) {
+                            // this could be a target! 
+                            bombTargets.Add(myC.Id);
+
+                            var safeCell = myCells.Where(c => c.Id != myC.Id && map.Dist(c.Id, eb.From) != dist).OrderBy(c => map.Dist(c.Id, myC.Id)).FirstOrDefault();
+                            if (safeCell == null) {
+                                // try to find one that is neutral and convenient
+                                safeCell = othCells.Where(c => c.Owner == 0 && map.Dist(c.Id, eb.From) != dist && c.Troups <= myC.Troups + myC.Capacity).OrderBy(c => -c.Capacity).FirstOrDefault();
+                                if (safeCell == null) {
+                                    // still nothing.. then look for one of the enemy ones
+                                    safeCell = othCells.Where(c => c.Owner == CPU && c.Troups + c.Capacity * map.Dist(c.Id, myC.Id) <= myC.Troups + myC.Capacity).OrderBy(c => -c.Capacity).FirstOrDefault();
+                                    if (safeCell == null) {
+                                        safeCell = othCells.Where(c => c.Owner == CPU).OrderBy(c => (c.Troups + c.Capacity * map.Dist(c.Id, myC.Id)) - (myC.Troups + myC.Capacity)).FirstOrDefault();                                        
+                                    }
+                                }
+                            }
+                            if (safeCell != null) {
+                                actions[myC.Id].Clear();
+                                actions[myC.Id].Add(Action.Move(myC.Id, safeCell.Id, myC.Troups + myC.Capacity));
+                            }                            
+                        }
+                    }
+                }
+
+                /*
                 var defenseTarget = FindDefensiveTarget(null, ctx, map);
                 
                 if(defenseTarget != null) {                    
@@ -420,10 +448,11 @@ class Player
                         }
                     }
                 }
+                */
             }
 
             int bombsLeft = ctx.MyBombsLeft;
-            bool newBomb = ctx.EnemyBombs.Any(b => b.OriginalTime == b.Time); // there's at least one enemy bomb launched this turn!   
+            bool newBomb = ctx.EnemyBombs.Any(b => b.Delta == 0); // there's at least one enemy bomb launched this turn!   
             if(newBomb) {    
                 if(bombsLeft > 0) {
                     Console.Error.WriteLine("looing for a bomb stgy");
@@ -455,7 +484,7 @@ class Player
                                     .Where(c => c.Owner == CPU 
                                             && (c.Capacity == 3 || (c.Troups >= 10 && c.Capacity > 1))
                                             && c.Offline == 0
-                                            && (myBombs.Count == 0 || myBombs[0].To != c.Id))
+                                            && (ctx.MyBombs.Count() == 0 || ctx.MyBombs.First().To != c.Id))
                                     .OrderBy(c => -c.Capacity).ThenBy(c => -c.Troups)
                                     .FirstOrDefault();
                                 
