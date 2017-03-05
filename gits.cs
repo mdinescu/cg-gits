@@ -158,8 +158,9 @@ class Player
         public int Owner { get; private set; }
 
         public Bomb Copy(bool passTime) {
-            var copy = new Bomb(Id, Owner, From, Time, To);
+            var copy = new Bomb(Id, Owner, From, To, Time);
             copy.Delta = this.Delta + (passTime ? 1 : 0);
+            copy.Time = Math.Max(-1, this.Time - (passTime ? 1 : 0));
             return copy;
         }
     }
@@ -274,6 +275,10 @@ class Player
     class Context {
         public Context(Map map) {
             Cells = new Cell[map.Size]; Bombs = new List<Bomb>(2);
+            playerCells = new List<Cell>[3];
+            playerCells[0] = new List<Cell>(map.Size);
+            playerCells[1] = new List<Cell>(map.Size);
+            playerCells[2] = new List<Cell>(map.Size);
             for(int i = 0; i < map.Size; i++)
                 Cells[i] = new Cell(i);
             MyTroups = new List<Troup>();
@@ -284,11 +289,11 @@ class Player
             Context ctx = new Context(map);
             if(previous != null) {
                 ctx.Turn = previous.Turn + 1;
-                ctx.MyBombsLeft = previous.MyBombsLeft;
-                ctx.EnemyBombsLeft = previous.EnemyBombsLeft;
+                ctx.posPlayerBombsLeft = previous.posPlayerBombsLeft;
+                ctx.negPlayerBombsLeft = previous.negPlayerBombsLeft;
             } else {
-                ctx.MyBombsLeft = 2;
-                ctx.EnemyBombsLeft = 2;
+                ctx.posPlayerBombsLeft = 2;
+                ctx.negPlayerBombsLeft = 2;
             }
                         
             int entityCount = int.Parse(tr.ReadLine());
@@ -305,6 +310,8 @@ class Player
                     ctx.Cells[entityId].Troups = arg2;
                     ctx.Cells[entityId].Capacity = arg3;
                     ctx.Cells[entityId].Offline = arg4;
+                    
+                    ctx.playerCells[arg1 + 1].Add(ctx.Cells[entityId]);                    
                     //Console.Error.WriteLine("E{0}.{1}: {2},{3},{4},{5}", entityType, entityId, arg1, arg2, arg3, arg4);                     
                 }else if(entityType == TROUP) {
                     var trp = new Troup(entityId, arg1, arg2, arg3, arg4, arg5);                     
@@ -323,18 +330,15 @@ class Player
                     }else {
                         ctx.Bombs.Add(bmb);
                         if (bmb.Owner == ME) {
-                            ctx.MyBombsLeft--;
+                            ctx.posPlayerBombsLeft--;
                         } else {
-                            ctx.EnemyBombsLeft--;
+                            ctx.negPlayerBombsLeft--;
                         }
                     }                                      
                 }
             }
             
-            foreach(var cell in ctx.Cells) {
-                if(cell.Id == 8) {
-                    Console.Error.WriteLine(" -> update {0} troups: {1} mine, {2} enemy ", cell, ctx.MyTroups.Count(), ctx.EnemyTroups.Count());
-                }
+            foreach(var cell in ctx.Cells) {            
                 cell.UpdateTroups(ctx.MyTroups, ctx.EnemyTroups);
             }
             ctx.UpdateScore();
@@ -342,31 +346,33 @@ class Player
         }
 
         public void UpdateScore() {
-            int myScore = 0; int enemyScore = 0;
+            posPlayerScore = 0; negPlayerScore = 0;
+                      
             for (int i = 0; i < Cells.Length; i++) {
-                if(Cells[i].Owner == ME) myScore += Cells[i].Troups;
-                else if(Cells[i].Owner == CPU) enemyScore += Cells[i].Troups;  
+                if(Cells[i].Owner == ME) posPlayerScore += Cells[i].Troups;
+                else if(Cells[i].Owner == CPU) negPlayerScore += Cells[i].Troups;  
             }
 
-            myScore += MyTroups.Sum(t => t.Size);
-            enemyScore += EnemyTroups.Sum(t => t.Size);
+            posPlayerScore += MyTroups.Sum(t => t.Size);
+            negPlayerScore += EnemyTroups.Sum(t => t.Size);
 
-            MyScore = myScore;
-            EnemyScore = enemyScore;
+            Console.Error.WriteLine(" -> updating scores:  {0} vs {1} on turn {2}", posPlayerScore, negPlayerScore, Turn);      
         }
 
+        private int posPlayerScore; private int negPlayerScore;
+        private int posPlayerBombsLeft; private int negPlayerBombsLeft;
+        public int Turn { get; private set; }
         public Cell[] Cells { get; private set; }
         public List<Bomb> Bombs { get; private set; }
-        public IEnumerable<Bomb> MyBombs { get { return Bombs.Where(b => b.Owner == ME); } }
-        public IEnumerable<Bomb> EnemyBombs { get { return Bombs.Where(b => b.Owner != ME); } }
+        public IEnumerable<Bomb> GetBombs(int playerId) { return Bombs.Where(b => b.Owner == playerId); }        
         public List<Troup> MyTroups { get; private set; }
-        public List<Troup> EnemyTroups { get; private set; }
-        public int MyScore { get; private set; }
-        public int EnemyScore { get; private set; }
-        public int Turn { get; private set; }
-
-        public int MyBombsLeft { get; private set; }
-        public int EnemyBombsLeft { get; private set; }
+        public List<Troup> EnemyTroups { get; private set; }         
+        public int GetScore(int playerId) { return playerId == 1 ? posPlayerScore : negPlayerScore; }  
+        public int GetBombsLeft(int playerId) { return playerId == 1 ? posPlayerBombsLeft : negPlayerBombsLeft; }      
+        private List<Cell>[] playerCells;
+        public List<Cell> GetPlayerCells(int playerId) {
+            return playerCells[playerId+1];
+        }
 
         public Cell GetBestPathFwd(int from, int to, Map map) {
             var sp = map.ShortestPath(from, to); 
@@ -399,6 +405,9 @@ class Player
 
         var stopWatch = System.Diagnostics.Stopwatch.StartNew();
         Context previousCtx = null;
+
+        var missleDefenseStgy = new MissleDefenseStrategy(map);
+        var missleOffenseStgy = new MissleOffenseStrategy(map);
         while (true)
         {
             Context ctx = Context.Parse(Console.In, previousCtx, map);
@@ -409,9 +418,10 @@ class Player
                 Console.Error.WriteLine("I'm on " + (MY_SIDE != 0 ? "LEFT" : "RIGHT"));            
             }
             
-            Console.Error.WriteLine("----[ {0:D3} ]  vs   [ {1:D3} ]---", ctx.MyScore, ctx.EnemyScore);
-            var myCells = ctx.Cells.Where(c => c.Owner == ME).OrderBy(c => -c.Troups).ToList();
-            var othCells = ctx.Cells.Where(c => c.Owner != ME).ToList();
+            Console.Error.WriteLine("----[ {0:D3} ]  vs   [ {1:D3} ]---", ctx.GetScore(ME), ctx.GetScore(-ME));
+            var myCells = ctx.GetPlayerCells(ME);
+            var neutCells = ctx.GetPlayerCells(0);
+            var enemyCells = ctx.GetPlayerCells(CPU);            
             
             // --------------- INITIALIZE ACTIONS FOR THIS TURN ----------------------------------------
             var actions = new Dictionary<int, List<Action>>();            
@@ -420,182 +430,177 @@ class Player
             }
             
             // --------------- LOOK FOR CELLS TO DEFEND/ATTACK ----------------------------------------
+            var availableTroups = new int[ctx.Cells.Length];
+            var fightFlight = new Dictionary<int, FightFlight>();
+            var needsHelp = new Dictionary<Cell, int>();
+            var freeToAttack = new HashSet<int>();
+            Console.Error.WriteLine(" -- CELL DEFENSE --");
             foreach(var myC in myCells) {
-                int totalIncoming = 0;
-                int troupsLeft = myC.Troups; int reserve = myC.Capacity;
-                int futureTroups = troupsLeft;
-                
-                if(myC.Incoming.Count > 0) {
-                    var underAttack = myC.Incoming;
-                    var firstWave = myC.Incoming.FirstOrDefault();
-                    
-                    totalIncoming = myC.CountIncoming();
-                    Console.Error.WriteLine(myC + " under attack in " + firstWave.Time + " w/ " + firstWave.Size + " (total incoming = " + totalIncoming + ")");
-                               
-                    int lastIncomingTime = 0; int lastReinforcementTime = 0;
-                    var incomingIt = myC.Incoming.GetEnumerator(); var reinforcementsIt = myC.Reinforcements.GetEnumerator();
-                    while(incomingIt.MoveNext()) {
-                        if(lastIncomingTime < incomingIt.Current.Time) {
-                            futureTroups += myC.Capacity;
-                            lastIncomingTime = incomingIt.Current.Time;
+                availableTroups[myC.Id] = myC.Troups; // total available troups for each of my cells
+
+                Cell futureCell = myC;                
+                Console.Error.WriteLine("{0} troups= {1}, cap= {2}", myC, myC.Troups, myC.Capacity);
+                                            
+                for(int i = 0; i < 5; i++) {  // see what things will look like in 5 future turns
+                    futureCell = futureCell.PlayForward();                
+                    if(futureCell.Owner == ME) {
+                        //if (i == 0) availableTroups[myC.Id] = futureCell.Troups;
+                        // still mine.. 
+                        if (futureCell.Capacity == 0 && futureCell.Troups < myC.Troups) {
+                            freeToAttack.Remove(myC.Id);
+                            fightFlight.Add(myC.Id, FightFlight.SolveFor(ctx, map, myC, i));
+                            break;
+                        } else {
+                            //Console.Error.WriteLine("free to attack as of {1} turns", myC, i); 
+                            freeToAttack.Add(myC.Id);   // TODO: ?? this should be improved.. need to look at incomings and determine excess troups
                         }
-                        futureTroups -= incomingIt.Current.Size;
-                        if(futureTroups <= 0) break;
-                    }
-                    
-                    if(futureTroups <= 0) {
-                        Console.Error.WriteLine("I will loose factory " + myC.Id + " and " + " troups with it");
+                    }else {
+                        // needs defense
+                        freeToAttack.Remove(myC.Id);    // TODO: ????
+
+                        Console.Error.WriteLine("{0} needs help in {1} turns", myC, i); 
+                        
+                        int totalHelpAvailable = myCells.Where(c => c.Id != myC.Id && map.Dist(c.Id, myC.Id) <= i)
+                                                        .Sum(c => c.Troups + c.Capacity * map.Dist(c.Id, myC.Id));
+                        
+                        if(myC.Capacity > 0 && totalHelpAvailable > futureCell.Troups) {                            
+                            needsHelp.Add(futureCell, i);
+                            break;
+                        }else {                    
+                            fightFlight.Add(myC.Id, FightFlight.SolveFor(ctx, map, myC, i));
+                            break;
+                        }
                     }
                 }
-                
-                var interestingCells = othCells
-                                        .Where(c => c.Troups < futureTroups && c.Capacity > 0)
-                                        .OrderBy(c => -c.Capacity)
-                                        .ThenBy(c => map.ShortestDist(myC.Id, c.Id))
-                                        .ThenBy(c => c.Troups);
-                     
-                foreach(var ic in interestingCells) {                        
-                    Console.Error.WriteLine("{0} troups = {1}, capacity = {2} -> {3}", myC, myC.Troups, myC.Capacity, ic);
-                    if(ctx.MyBombs.Any(b => b.To == ic.Id && b.Time > map.ShortestDist(myC.Id, ic.Id))) {
-                        Console.Error.WriteLine(" ignoring {0} due to bomb coming after..");
+            }            
+
+            foreach(var needsHelpKV in needsHelp.OrderBy(kv => -kv.Key.Capacity).ThenBy(kv => kv.Value)) {
+                var needHelpCell = needsHelpKV.Key;
+                int troupsNeeded = needHelpCell.Troups;
+                foreach(var ff in fightFlight.Values.Where(ff => map.Dist(ff.Cell.Id, needHelpCell.Id) <= needsHelpKV.Value)) {
+                    if(availableTroups[ff.Cell.Id] >= troupsNeeded) {
+                        actions[ff.Cell.Id].Add(Action.Move(ff.Cell.Id, needHelpCell.Id, troupsNeeded));
+                        troupsNeeded = 0;
                         break;
-                    }
-                    
-                    int extra = ic.Owner == CPU ? ic.Capacity : 0;
-                    int holdBack = myC.Capacity < ic.Capacity ? 0 : myC.Capacity - ic.Capacity;
-                    if(ic.Troups + holdBack + extra < troupsLeft) {
-                        var sp = map.ShortestPath(myC.Id, ic.Id);                    
-                        actions[myC.Id].Add(Action.Move(myC.Id, sp[0].B, ic.Troups + 1 + extra));
-                        futureTroups -= (ic.Troups+1);
-                    }
-                    if(futureTroups <= reserve)
-                        break;
+                    }else {
+                        actions[ff.Cell.Id].Add(Action.Move(ff.Cell.Id, needHelpCell.Id, availableTroups[ff.Cell.Id]));
+                        troupsNeeded -= availableTroups[ff.Cell.Id];
+                    }                    
                 }
-                
-                if(futureTroups > 10 && myC.Capacity < 3) {
-                    actions[myC.Id].Add(Action.Inc(myC.Id));
+                if (troupsNeeded > 0) {
+                    foreach(var cell in ctx.Cells.Where(c => freeToAttack.Contains(c.Id)).OrderBy(c => map.Dist(c.Id, needHelpCell.Id))) {
+                        if(availableTroups[cell.Id] >= troupsNeeded) {
+                            actions[cell.Id].Add(Action.Move(cell.Id, needHelpCell.Id, troupsNeeded));
+                            troupsNeeded = 0;
+                            break;
+                        }else {
+                            actions[cell.Id].Add(Action.Move(cell.Id, needHelpCell.Id, availableTroups[cell.Id]));
+                            troupsNeeded -= availableTroups[cell.Id];
+                        } 
+                    }
+                }
+            }
+
+            foreach(var ff in fightFlight.Values) {
+                var fightFlightSolution = ff.Choose(true);
+                if (fightFlightSolution != null) {
+                    actions[ff.Cell.Id].Add(Action.Move(ff.Cell.Id, fightFlightSolution.Id, availableTroups[ff.Cell.Id]));
                 }
             }
             
-            if(ctx.EnemyBombs.Count() > 0) {                
-                Console.Error.WriteLine(" -----  INCOMING BOMBS ----- ");
-                // -- check if any of the enemy bombs could be headed to each cell 
-                var bombTargets = new HashSet<int>();
-                foreach(var eb in ctx.EnemyBombs) {
-                    foreach(var myC in myCells) {
-                        int dist = map.Dist(myC.Id, eb.From);
-                        if (dist == eb.Delta + 1) {
-                            // this could be a target! 
-                            bombTargets.Add(myC.Id);
-
-                            var safeCell = myCells.Where(c => c.Id != myC.Id && map.Dist(c.Id, eb.From) != dist).OrderBy(c => map.Dist(c.Id, myC.Id)).FirstOrDefault();
-                            if (safeCell == null) {
-                                // try to find one that is neutral and convenient
-                                safeCell = othCells.Where(c => c.Owner == 0 && map.Dist(c.Id, eb.From) != dist && c.Troups <= myC.Troups + myC.Capacity).OrderBy(c => -c.Capacity).FirstOrDefault();
-                                if (safeCell == null) {
-                                    // still nothing.. then look for one of the enemy ones
-                                    safeCell = othCells.Where(c => c.Owner == CPU && c.Troups + c.Capacity * map.Dist(c.Id, myC.Id) <= myC.Troups + myC.Capacity).OrderBy(c => -c.Capacity).FirstOrDefault();
-                                    if (safeCell == null) {
-                                        safeCell = othCells.Where(c => c.Owner == CPU).OrderBy(c => (c.Troups + c.Capacity * map.Dist(c.Id, myC.Id)) - (myC.Troups + myC.Capacity)).FirstOrDefault();                                        
-                                    }
-                                }
-                            }
-                            if (safeCell != null) {
-                                actions[myC.Id].Clear();
-                                actions[myC.Id].Add(Action.Move(myC.Id, safeCell.Id, myC.Troups + myC.Capacity));
-                            }                            
-                        }
-                    }
-                }
-            }
-
-            int bombsLeft = ctx.MyBombsLeft;
-            bool newBomb = ctx.EnemyBombs.Any(b => b.Delta == 0); // there's at least one enemy bomb launched this turn!   
-            if(newBomb) {    
-                if(bombsLeft > 0) {
-                    Console.Error.WriteLine("looking for a bomb stgy");
-                    var myOtherBomb = ctx.MyBombs.FirstOrDefault();
-
-                    // first aim for the largest enemy factory by production and # of troups
-                    //  +
-                    //    int damageScore = Math.Min(cell.Troups, Math.Max(10, cell.Troups / 2)) + cell.Capacity * 5;
-
-                    // look for neutral cells that would be taken by enemy by the time the bomb is deployed
-                    //  -
-                    //    int sacrificedTroups = sum(troups-in-transit-to-target, where arrival time == explosion-time)
-                    
-                    // evalOwnership(cell, at-arrival, based on troups in trasit)
-                    var bombSites = new Dictionary<Tuple<Cell, Cell>, int>();
-                    foreach(var bomber in myCells.Where(c => myOtherBomb == null || myOtherBomb.From != c.Id)) {
-                        // based on the selected bomber..
-                        var bombSite = othCells.Where(c => (myOtherBomb == null || myOtherBomb.To != c.Id))
-                                    .Select(c => EvaluateOwnership(c, map.Dist(c.Id, bomber.Id)))
-                                    .Where(c => c.Owner == CPU && c.Offline == 0)
-                                    .OrderBy(c => -(Math.Min(c.Troups, Math.Max(10, c.Troups / 2)) + c.Capacity * 5))
-                                    .FirstOrDefault();
-                        bombSites.Add(Tuple.Create(bombSite, bomber), Math.Min(bombSite.Troups, Math.Max(10, bombSite.Troups / 2)) + bombSite.Capacity * 5);
-                    }
-
-                    if(bombSites.Count > 0) {
-                        // pick the best one out of all options
-                        var mostDamage = bombSites.OrderBy(kv => -kv.Value).First();
-                        var bomber = mostDamage.Key.Item2;
-                        var bombSite = mostDamage.Key.Item1;
-                        Console.Error.WriteLine(".. bmb site = " + bombSite);
-                        Console.Error.WriteLine(".. bmber = " + bomber);
-                        actions[bomber.Id].Add(Action.Bomb(bomber.Id, bombSite.Id));
-                        bombsLeft--;
-                    }
-
+            Console.Error.WriteLine(" -- CELL ACTIONS --");
+            foreach(var myC in myCells) {                
+                int reserve = myC.Capacity;
+                int troupsLeft = availableTroups[myC.Id];
+                int futureTroups = troupsLeft;                                                
+                Console.Error.WriteLine("{0} troups= {1}, cap= {2}", myC, troupsLeft, myC.Capacity);            
+                if(freeToAttack.Contains(myC.Id)) {
                     /*
-                    var bomberDest = othCells.Where(oc => oc.Owner == CPU && oc.Offline == 0
-                                                        && (myOtherBomb == null || myOtherBomb.To != oc.Id))
-                                             .OrderBy(oc => -oc.Capacity)
-                                             .FirstOrDefault();
-                    if(bomberDest != null) {
-                        Console.Error.WriteLine(".. bmb dest = " + bomberDest);
-                        var bomber = myCells
-                                    //.Where(c => c.Troups == 0)
-                                    .OrderBy(c => map.Dist(c.Id, bomberDest.Id))
-                                    .FirstOrDefault();
-                        if(bomber != null) {                            
-                            Console.Error.WriteLine(".. bmber = " + bomber);
-                            actions[bomber.Id].Clear();
-                            actions[bomber.Id].Add(Action.Bomb(bomber.Id, bomberDest.Id));
-                            bombsLeft--;                            
+                    foreach(var b in ctx.GetBombs(ME)) {
+                        bool hasTroup = ctx.MyTroups.Any(t => t.To == b.To && t.Time == b.Time + 1 || t.Time == b.Time + 2);
+                        int distToBombTarget = map.Dist(myC.Id, b.To);
+                        if (!hasTroup && availableTroups[myC.Id] > 1 && distToBombTarget == b.Time + 1) {
+                            availableTroups[myC.Id]--;
+                            actions[myC.Id].Add(Action.Move(myC.Id, b.To, 1));
                         }
                     }
                     */
+                    var interestingCells = ctx.Cells
+                                            .Where(c => c.Owner != ME 
+                                                    //&& map.Dist(c.Id, myC.Id) < 10
+                                                    && c.Troups < futureTroups && c.Capacity > 0)
+                                            .OrderBy(c => -c.Capacity)
+                                            .ThenBy(c => map.ShortestDist(myC.Id, c.Id))
+                                            .ThenBy(c => c.Troups);
+                    
+                    int holdBack = 0; // should be based on how much I need for defense  myC.Capacity - ic.Capacity;
+                        
+                    int sendingAway = 0;
+                    foreach(var ic in interestingCells) {                        
+                        var icStr = String.Format("  {0} troups= {1}, cap= {2} -> ", ic, ic.Troups, ic.Capacity); 
+                        
+                        if(ctx.GetBombs(ME).Any(b => b.To == ic.Id && b.Time > map.ShortestDist(myC.Id, ic.Id))) {
+                            Console.Error.WriteLine(icStr + " ignore: bomb coming");
+                            break;
+                        }
+                        
+                        int extra = ic.Owner == CPU ? ic.Capacity * (1+map.ShortestDist(myC.Id, ic.Id)) + 1 : 1;
+                        
+                        if(ic.Troups + holdBack + extra < futureTroups) {
+                            var nextHop = ctx.GetBestPathFwd(myC.Id, ic.Id, map);                    
+                            Console.Error.WriteLine(icStr + " attack with {0} via {1}", ic.Troups + extra, nextHop.Id);                            
+                            actions[myC.Id].Add(Action.Move(myC.Id, nextHop.Id, ic.Troups + extra));
+                            futureTroups -= (ic.Troups + extra);
+                            sendingAway += ic.Troups + extra;
+                        }else {
+                            Console.Error.WriteLine(icStr + " ignore: needed {0}; not enough", ic.Troups + extra);
+                        }
+                        if(futureTroups <= reserve || myC.Troups - sendingAway <= 0) {
+                            break;
+                        }
+                    }
+                    
+                    Console.Error.WriteLine(" {0} troups left..", futureTroups);
+                    if(myC.Troups - sendingAway >= 10 && myC.Capacity < 3) {                        
+                        int defenceCapacity = (myC.Troups - sendingAway - 10); bool canDefend = true;
+                        for(int turn = 1; turn < 3; turn++) {  // TODO:  should I look at 3 turns in the future?!
+                            int attackCapacity = ctx.GetPlayerCells(CPU)
+                                                    .Where(c => map.Dist(c.Id, myC.Id) == turn)
+                                                    .Sum(c => c.Troups + c.Capacity);
+                            attackCapacity += myC.Incoming.Where(it => it.Time == turn).Sum(it => it.Size);
+                            defenceCapacity += myC.Capacity + 1 + myC.Reinforcements.Where(rt => rt.Time == turn).Sum(rt => rt.Size);
+                            
+                            defenceCapacity -= attackCapacity;
+                            if(defenceCapacity < 0) {
+                                Console.Error.WriteLine(" chk upgrade failed; defence fails at turn " + turn);
+                                canDefend = false;
+                                break;
+                            }
+                        }
+                        if(canDefend) {
+                            Console.Error.WriteLine(" chk upgrade success! -> updateding");
+                            actions[myC.Id].Add(Action.Inc(myC.Id));
+                        }
+                    }else {
+                        Console.Error.WriteLine(" chk upgrade - not enough troups left");
+                    }
                 }
             }
             
-            if (bombsLeft > 0) {
-                Cell firstBombSite = null;
-                // if I have any bombs left, look through potential destinations
-                firstBombSite = othCells
-                                    .Where(c => c.Owner == CPU 
-                                            && (c.Capacity == 3 || (c.Troups >= 10 && c.Capacity > 1))
-                                            && c.Offline == 0
-                                            && (ctx.MyBombs.Count() == 0 || ctx.MyBombs.First().To != c.Id))
-                                    .OrderBy(c => -c.Capacity).ThenBy(c => -c.Troups)
-                                    .FirstOrDefault();
-                                
-                if(firstBombSite != null && (ctx.MyScore < ctx.EnemyScore - 1 || ctx.Turn > 15)) {
-                    Console.Error.WriteLine(" [CONSIDER THE BOMB TO: " + firstBombSite + "]");
-                    
-                    var bombFrom = myCells.OrderBy(c => c.Capacity)
-                                    .ThenBy(c => map.Dist(c.Id, firstBombSite.Id))
-                                    .ThenBy(c => actions[c.Id].Count)
-                                    .FirstOrDefault();
-                    Console.Error.WriteLine("consider to bomb from " + bombFrom.Id);
-                    actions[bombFrom.Id].Clear();
-                    actions[bombFrom.Id].Add(Action.Bomb(bombFrom.Id,firstBombSite.Id));
-                    bombsLeft--;
-                    
-                    Console.Error.WriteLine("First choice for bombing: {0}", firstBombSite);
-                }                
+            if(ctx.GetBombs(-ME).Count() > 0) {                
+                Console.Error.WriteLine(" -----  MISSLE DEFENSE ----- ");
+                var mdsActions = missleDefenseStgy.Apply(ctx, ME); // apply missle defense, from ME perspective
+                foreach(var action in mdsActions) {
+                    actions[action.Key] = action.Value;
+                }
             }
-            
+                        
+            Console.Error.WriteLine(" -----  MISSLE OFFENSE ----- ");
+            var mosActions = missleOffenseStgy.Apply(ctx, ME);
+            foreach(var action in mosActions) {
+                actions[action.Key].AddRange(action.Value);
+            }
+
             string msg = "(" + stopWatch.Elapsed.TotalMilliseconds + ")";
             stopWatch.Reset();            
             
@@ -614,6 +619,45 @@ class Player
         }
     }
 
+    class FightFlight {
+        public Cell Cell { get; set; }
+        public List<Cell> Fight { get; set; }
+        public List<Cell> Flee { get; set; }
+        public int TurnsLeft { get; set; }
+        public Cell Choose(bool preferAttack) {
+            if(preferAttack && Fight.Count > 0) return Fight[0];
+            else if(Flee.Count > 0) return Flee[0];            
+            else if(Fight.Count > 0) return Fight[0];
+            return null;
+        }
+
+        public static FightFlight SolveFor(Context ctx, Map map, Cell cell, int turnsLeft) {
+            Console.Error.Write("{0} fight/flight in {1} turns ({2} capacity)", cell, turnsLeft, cell.Capacity);
+            var canAttack = "";
+            var fights = new List<Cell>();
+            foreach(var eCell in ctx.GetPlayerCells(CPU)
+                                    .Where(ec => ec.Troups + ec.Capacity * map.Dist(ec.Id, cell.Id) < cell.Troups && ec.Capacity > 0)
+                                    .OrderBy(ec => map.Dist(ec.Id, cell.Id))
+                                    .ThenBy(ec => -ec.Capacity)) {
+                canAttack += eCell.Id + ";";
+                fights.Add(eCell);
+            }
+            Console.Error.WriteLine(" -> attack: " + canAttack);
+            var canFlee = "";
+            var flees = new List<Cell>();
+            foreach(var fCell in ctx.GetPlayerCells(ME)
+                                    .Where(fc => fc.Id != cell.Id)
+                                    .OrderBy(fc => map.Dist(fc.Id, cell.Id))
+                                    .ThenBy(fc => -fc.Capacity)) {
+                canFlee += fCell.Id + ";";
+                flees.Add(fCell);
+            }
+            Console.Error.WriteLine(" -> or flee: " + canFlee);
+
+            return new FightFlight() { Cell = cell, Fight = fights, Flee = flees, TurnsLeft = turnsLeft };
+        }
+    }
+
     private static Cell EvaluateOwnership(Cell cell, int turns) {
         //if(cell.Id == 8) 
         //    Console.Error.WriteLine(": eval {0} in {1} turns", cell, turns);
@@ -627,24 +671,196 @@ class Player
         return lastState;
     }
 
-    private static Cell FindDefensiveTarget(Cell fromCell, Context ctx, Map map) {
-        // TODO:  rewrite this to find a destination where to move troops that is close, then bring them back when bomb explodes..        
-        var defenseTarget = ctx.Cells.Where(oc => oc.Owner != ME && oc.Capacity >= 1)
-                                    .OrderBy(oc => -oc.Capacity)                                    
-                                    .ThenBy(oc => oc.Troups)
-                                    .ThenBy(oc => ((oc.Id % 2) == MY_SIDE?0:1))
-                                    // potentially leave this empty
-                                    .ThenBy(oc => fromCell != null ? map.Dist(fromCell.Id, oc.Id) : -oc.Owner)
-                                    .FirstOrDefault();
-        if(defenseTarget == null) {
-            defenseTarget = ctx.Cells.Where(oc => oc.Owner != ME && oc.Capacity > 0)
-                            .OrderBy(oc => -oc.Capacity)
-                            .ThenBy(oc => oc.Troups)
-                            .ThenBy(oc => ((oc.Id % 2) == MY_SIDE?0:1))
-                            // potentially leave this empty
-                            .ThenBy(oc => fromCell != null ? map.Dist(fromCell.Id, oc.Id) : -oc.Owner)
-                            .FirstOrDefault();
+    class Strategy {
+        protected void AddAction(Dictionary<int, List<Action>> actions, int cellId, Action a, bool clear) {
+            if(!actions.ContainsKey(cellId)) actions.Add(cellId, new List<Action>());
+            if(clear) actions[cellId].Clear();
+            actions[cellId].Add(a);
         }
-        return defenseTarget;
+    }
+
+    class MissleDefenseStrategy : Strategy {
+        private Map map;
+        public MissleDefenseStrategy(Map map) {
+            this.map = map;
+        }
+        public Dictionary<int, List<Action>> Apply(Context ctx, int playerId) {
+            var actions = new Dictionary<int, List<Action>>();
+
+            var myCells = ctx.GetPlayerCells(playerId);            
+            var neutralCells = ctx.GetPlayerCells(0);
+            var enemyCells = ctx.GetPlayerCells(-playerId);
+            
+            // -- check if any of the enemy bombs could be headed to each cell 
+            var possibleBombTargets = new HashSet<int>();
+            foreach(var eb in ctx.GetBombs(-playerId)) {
+                //Console.Error.WriteLine("targets for {0}, away for {1}", eb.Id, eb.Delta);
+                foreach(var cell in myCells) {
+                    int dist = map.Dist(cell.Id, eb.From);
+                    if (dist == eb.Delta + 1) {
+                        Console.Error.WriteLine("potential bomb target {0}", cell.Id);
+                        possibleBombTargets.Add(cell.Id);
+                    }
+                }
+            }
+            foreach(var eb in ctx.GetBombs(-playerId)) {
+                foreach(var possibleTarget in possibleBombTargets) {
+                    var myC = ctx.Cells[possibleTarget];
+                    int dist = map.Dist(myC.Id, eb.From);                        
+                    if (dist == eb.Delta + 1) {
+                        // check if any of my own are taking fire.. and direct the units there
+                        Cell safeCell = null;
+                        if (myC.Capacity < 2) {
+                            safeCell = myCells.Where(c => !possibleBombTargets.Contains(c.Id) 
+                                                        && map.Dist(c.Id, eb.From) != eb.Delta + map.Dist(c.Id, myC.Id) 
+                                                        && c.Capacity >= myC.Capacity
+                                                        ).OrderBy(c => -c.Incoming.Sum(t => t.Size))
+                                                        .OrderBy(c => map.Dist(c.Id, myC.Id)).FirstOrDefault();                            
+                        }
+                        if(safeCell == null) {
+                            safeCell = myCells.Where(c => c.Id != myC.Id && map.Dist(c.Id, eb.From) < dist && !possibleBombTargets.Contains(c.Id)).OrderBy(c => map.Dist(c.Id, myC.Id)).FirstOrDefault();
+                            if (safeCell == null) {
+                                // try to find one that is neutral and convenient
+                                safeCell = neutralCells.Where(c => map.Dist(c.Id, eb.From) != dist && c.Troups <= myC.Troups + myC.Capacity).OrderBy(c => -c.Capacity).FirstOrDefault();
+                                if (safeCell == null) {
+                                    safeCell = myCells.Where(c => c.Id != myC.Id && map.Dist(c.Id, eb.From) > dist + 1 && !possibleBombTargets.Contains(c.Id)).OrderBy(c => map.Dist(c.Id, myC.Id)).FirstOrDefault();
+                                    if(safeCell == null) {
+                                        // still nothing.. then look for one of the enemy ones
+                                        safeCell = enemyCells.Where(c => c.Troups + c.Capacity * map.Dist(c.Id, myC.Id) <= myC.Troups + myC.Capacity).OrderBy(c => -c.Capacity).FirstOrDefault();
+                                        if (safeCell == null) {
+                                            safeCell = enemyCells.OrderBy(c => (c.Troups + c.Capacity * map.Dist(c.Id, myC.Id)) - (myC.Troups + myC.Capacity)).FirstOrDefault();                                        
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (safeCell != null) {
+                            //Console.Error.WriteLine("- found safe cell {0}", safeCell);
+                            AddAction(actions, myC.Id, Action.Move(myC.Id, safeCell.Id, myC.Troups + myC.Capacity), true);                            
+                        }                            
+                    }
+                }
+            }
+            return actions;
+        }
+    }
+
+    class OldMissleOffenseStrategy : Strategy {
+        private Map map;
+        public OldMissleOffenseStrategy(Map map) {
+            this.map = map;
+        }
+
+        public Dictionary<int, List<Action>> Apply(Context ctx, int playerId) {
+            var actions = new Dictionary<int, List<Action>>();
+
+            int bombsLeft = ctx.GetBombsLeft(playerId);
+            if (bombsLeft == 0) return actions;
+
+            var myOtherBomb = ctx.GetBombs(playerId).FirstOrDefault();
+            if( myOtherBomb != null) {
+                Console.Error.WriteLine("bombing {0} from {1} in {2} turns", myOtherBomb.To, myOtherBomb.From, myOtherBomb.Time);
+            }
+            bool newBomb = ctx.GetBombs(-playerId).Any(b => b.Delta == 0); // there's at least one enemy bomb launched this turn!   
+            if(newBomb) { 
+                var bomberDest = ctx.GetPlayerCells(-playerId).Where(oc => oc.Offline == 0
+                                                    && (myOtherBomb == null || myOtherBomb.To != oc.Id))
+                                            .OrderBy(oc => -oc.Capacity)
+                                            .FirstOrDefault();
+                if(bomberDest != null) {
+                    Console.Error.WriteLine(".. bmb dest = " + bomberDest);
+                    var bomber = ctx.GetPlayerCells(playerId)
+                                //.Where(c => c.Troups == 0)
+                                .OrderBy(c => map.Dist(c.Id, bomberDest.Id))
+                                .FirstOrDefault();
+                    if(bomber != null) {                            
+                        Console.Error.WriteLine(".. bmber = " + bomber);
+                        AddAction(actions, bomber.Id, Action.Bomb(bomber.Id, bomberDest.Id), false);                        
+                        bombsLeft--;                            
+                    }
+                }
+            }
+
+            if (bombsLeft > 0) {
+                Cell firstBombSite = null;
+                // if I have any bombs left, look through potential destinations
+                firstBombSite = ctx.GetPlayerCells(-playerId)
+                                    .Where(c => (c.Capacity == 3 || (c.Troups >= 10 && c.Capacity > 1))
+                                            && c.Offline == 0
+                                            && (myOtherBomb == null || myOtherBomb.To != c.Id))
+                                    .OrderBy(c => -c.Capacity).ThenBy(c => -c.Troups)
+                                    .FirstOrDefault();
+                
+                if(firstBombSite != null) {
+                    Console.Error.WriteLine(" [CONSIDER THE BOMB TO: " + firstBombSite + "]");
+                    
+                    var bombFrom = ctx.GetPlayerCells(playerId).OrderBy(c => map.Dist(c.Id, firstBombSite.Id))                                                                       
+                                    .FirstOrDefault();
+                    Console.Error.WriteLine("consider to bomb from " + bombFrom.Id);
+                    AddAction(actions, bombFrom.Id, Action.Bomb(bombFrom.Id,firstBombSite.Id), false);                    
+                    bombsLeft--;
+                    
+                    Console.Error.WriteLine("First choice for bombing: {0}", firstBombSite);
+                }                
+            }
+            return actions;
+        }
+    }
+
+    class MissleOffenseStrategy : Strategy {
+        private Map map;
+        public MissleOffenseStrategy(Map map) {
+            this.map = map;
+        }
+
+        public Dictionary<int, List<Action>> Apply(Context ctx, int playerId) {
+            var actions = new Dictionary<int, List<Action>>();
+
+            int bombsLeft = ctx.GetBombsLeft(playerId);
+            if(bombsLeft == 0) return actions;
+
+            var myOtherBomb = ctx.GetBombs(playerId).FirstOrDefault();
+            if (myOtherBomb != null) {
+                Console.Error.WriteLine("bombing {0} from {1} in {2} turns", myOtherBomb.To, myOtherBomb.From, myOtherBomb.Time);
+            }
+            bool newBomb = ctx.GetBombs(-playerId).Any(b => b.Delta == 0); // there's at least one enemy bomb launched this turn!   
+
+            Console.Error.WriteLine("Looking for a bomb stgy (newBomb == {0})", newBomb);                    
+
+            // first aim for the largest enemy factory by production and # of troups
+            //  +
+            //    int damageScore = Math.Min(cell.Troups, Math.Max(10, cell.Troups / 2)) + cell.Capacity * 5;
+
+            // look for neutral cells that would be taken by enemy by the time the bomb is deployed
+            //  -
+            //    int sacrificedTroups = sum(troups-in-transit-to-target, where arrival time == explosion-time)
+                                
+            // evalOwnership(cell, at-arrival, based on troups in trasit)
+            var bombSites = new Dictionary<Tuple<Cell, Cell>, int>();
+            foreach(var bomber in ctx.GetPlayerCells(playerId).Where(c => myOtherBomb == null || myOtherBomb.From != c.Id)) {
+                // based on the selected bomber..
+                var bombSite = ctx.Cells.Where(c => c.Owner != playerId && (myOtherBomb == null || myOtherBomb.To != c.Id))
+                            .Select(c => EvaluateOwnership(c, map.Dist(c.Id, bomber.Id)))
+                            .Where(c => c.Owner == CPU && c.Offline == 0 && c.Capacity > 0)
+                            .OrderBy(c => -c.Capacity * 5) // (Math.Min(c.Troups, Math.Max(10, c.Troups / 2)) + 
+                            .FirstOrDefault();
+                if(bombSite == null) continue; 
+                bombSites.Add(Tuple.Create(bombSite, bomber), Math.Min(bombSite.Troups, Math.Max(10, bombSite.Troups / 2)) + bombSite.Capacity * 5);
+            }
+
+            foreach(var bombSolution in bombSites.OrderBy(kv => map.Dist(kv.Key.Item1.Id, kv.Key.Item2.Id))) {
+                // pick the best one out of all options                
+                var bomber = bombSolution.Key.Item2;
+                var bombSite = bombSolution.Key.Item1;
+
+                Console.Error.WriteLine(".. bmb site = " + bombSite);
+                Console.Error.WriteLine(".. bmber = " + bomber);
+                AddAction(actions, bomber.Id, Action.Bomb(bomber.Id, bombSite.Id), false);
+                bombsLeft--;
+                if (bombsLeft == 0) break;                
+            }
+            
+            return actions;
+        }
     }
 }
