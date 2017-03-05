@@ -249,9 +249,9 @@ class Player
                     for(int j = 0; j < N; j++) {
                         int d = (SP_D[i][k] != MXX && 
                                 SP_D[k][j] != MXX)
-                                ? SP_D[i][k] + SP_D[k][j]
+                                ? SP_D[i][k] + SP_D[k][j] + 1       // each hop adds 1 turn
                                 : MXX;
-                        if(d < SP_D[i][j]) {
+                        if(d <= SP_D[i][j]) {                       // if paths equal, prefer the one w/ extra hops
                             SP_D[i][j] = d;
                             NEXT[i][j] = NEXT[i][k];
                         }
@@ -377,6 +377,7 @@ class Player
         public Cell GetBestPathFwd(int from, int to, Map map) {
             var sp = map.ShortestPath(from, to); 
             var nextHop = Cells[sp[0].B];
+            return nextHop;
             if (nextHop.Owner == ME) return nextHop;
             if (sp.Count > 1) {            
                 foreach(var link in sp) {
@@ -479,22 +480,26 @@ class Player
                 int troupsNeeded = needHelpCell.Troups;
                 foreach(var ff in fightFlight.Values.Where(ff => map.Dist(ff.Cell.Id, needHelpCell.Id) <= needsHelpKV.Value)) {
                     if(availableTroups[ff.Cell.Id] >= troupsNeeded) {
-                        actions[ff.Cell.Id].Add(Action.Move(ff.Cell.Id, needHelpCell.Id, troupsNeeded));
+                        var nextHop = ctx.GetBestPathFwd(ff.Cell.Id, needHelpCell.Id, map);
+                        actions[ff.Cell.Id].Add(Action.Move(ff.Cell.Id, nextHop.Id, troupsNeeded));
                         troupsNeeded = 0;
                         break;
                     }else {
-                        actions[ff.Cell.Id].Add(Action.Move(ff.Cell.Id, needHelpCell.Id, availableTroups[ff.Cell.Id]));
+                        var nextHop = ctx.GetBestPathFwd(ff.Cell.Id, needHelpCell.Id, map);
+                        actions[ff.Cell.Id].Add(Action.Move(ff.Cell.Id, nextHop.Id, availableTroups[ff.Cell.Id]));
                         troupsNeeded -= availableTroups[ff.Cell.Id];
                     }                    
                 }
                 if (troupsNeeded > 0) {
                     foreach(var cell in ctx.Cells.Where(c => freeToAttack.Contains(c.Id)).OrderBy(c => map.Dist(c.Id, needHelpCell.Id))) {
                         if(availableTroups[cell.Id] >= troupsNeeded) {
-                            actions[cell.Id].Add(Action.Move(cell.Id, needHelpCell.Id, troupsNeeded));
+                            var nextHop = ctx.GetBestPathFwd(cell.Id, needHelpCell.Id, map);
+                            actions[cell.Id].Add(Action.Move(cell.Id, nextHop.Id, troupsNeeded));
                             troupsNeeded = 0;
                             break;
                         }else {
-                            actions[cell.Id].Add(Action.Move(cell.Id, needHelpCell.Id, availableTroups[cell.Id]));
+                            var nextHop = ctx.GetBestPathFwd(cell.Id, needHelpCell.Id, map);
+                            actions[cell.Id].Add(Action.Move(cell.Id, nextHop.Id, availableTroups[cell.Id]));
                             troupsNeeded -= availableTroups[cell.Id];
                         } 
                     }
@@ -504,7 +509,8 @@ class Player
             foreach(var ff in fightFlight.Values) {
                 var fightFlightSolution = ff.Choose(true);
                 if (fightFlightSolution != null) {
-                    actions[ff.Cell.Id].Add(Action.Move(ff.Cell.Id, fightFlightSolution.Id, availableTroups[ff.Cell.Id]));
+                    var nextHop = ctx.GetBestPathFwd(ff.Cell.Id, fightFlightSolution.Id, map);
+                    actions[ff.Cell.Id].Add(Action.Move(ff.Cell.Id, nextHop.Id, availableTroups[ff.Cell.Id]));
                 }
             }
             
@@ -548,7 +554,7 @@ class Player
                         
                         if(ic.Troups + holdBack + extra < futureTroups) {
                             var nextHop = ctx.GetBestPathFwd(myC.Id, ic.Id, map);                    
-                            Console.Error.WriteLine(icStr + " attack with {0} via {1}", ic.Troups + extra, nextHop.Id);                            
+                            Console.Error.WriteLine(icStr + " attack with {0} via {1}", ic.Troups + extra, nextHop.Id);                                                     
                             actions[myC.Id].Add(Action.Move(myC.Id, nextHop.Id, ic.Troups + extra));
                             futureTroups -= (ic.Troups + extra);
                             sendingAway += ic.Troups + extra;
@@ -560,29 +566,34 @@ class Player
                         }
                     }
                     
-                    Console.Error.WriteLine(" {0} troups left..", futureTroups);
-                    if(myC.Troups - sendingAway >= 10 && myC.Capacity < 3) {                        
-                        int defenceCapacity = (myC.Troups - sendingAway - 10); bool canDefend = true;
-                        for(int turn = 1; turn < 3; turn++) {  // TODO:  should I look at 3 turns in the future?!
-                            int attackCapacity = ctx.GetPlayerCells(CPU)
-                                                    .Where(c => map.Dist(c.Id, myC.Id) == turn)
-                                                    .Sum(c => c.Troups + c.Capacity);
-                            attackCapacity += myC.Incoming.Where(it => it.Time == turn).Sum(it => it.Size);
-                            defenceCapacity += myC.Capacity + 1 + myC.Reinforcements.Where(rt => rt.Time == turn).Sum(rt => rt.Size);
-                            
-                            defenceCapacity -= attackCapacity;
-                            if(defenceCapacity < 0) {
-                                Console.Error.WriteLine(" chk upgrade failed; defence fails at turn " + turn);
-                                canDefend = false;
-                                break;
+                    Console.Error.Write(" {0} troups left..", futureTroups);
+                    if(ctx.GetBombs(-ME).Count() == 0) {
+                        
+                        if(myC.Troups - sendingAway >= 10 && myC.Capacity < 3) {                        
+                            int defenceCapacity = (myC.Troups - sendingAway - 10); bool canDefend = true;
+                            for(int turn = 1; turn < 3; turn++) {  // TODO:  should I look at 3 turns in the future?!
+                                int attackCapacity = ctx.GetPlayerCells(CPU)
+                                                        .Where(c => map.Dist(c.Id, myC.Id) == turn)
+                                                        .Sum(c => c.Troups + c.Capacity);
+                                attackCapacity += myC.Incoming.Where(it => it.Time == turn).Sum(it => it.Size);
+                                defenceCapacity += myC.Capacity + 1 + myC.Reinforcements.Where(rt => rt.Time == turn).Sum(rt => rt.Size);
+                                
+                                defenceCapacity -= attackCapacity;
+                                if(defenceCapacity < 0) {
+                                    Console.Error.WriteLine(" chk upgrade failed; defence fails at turn " + turn);
+                                    canDefend = false;
+                                    break;
+                                }
                             }
+                            if(canDefend) {
+                                Console.Error.WriteLine(" chk upgrade success! -> updateding");
+                                actions[myC.Id].Add(Action.Inc(myC.Id));
+                            }
+                        }else {
+                            Console.Error.WriteLine(" chk upgrade failed; " + ((myC.Capacity < 3) ? "not enough troups left" : "already max"));
                         }
-                        if(canDefend) {
-                            Console.Error.WriteLine(" chk upgrade success! -> updateding");
-                            actions[myC.Id].Add(Action.Inc(myC.Id));
-                        }
-                    }else {
-                        Console.Error.WriteLine(" chk upgrade - not enough troups left");
+                    }else{
+                        Console.Error.WriteLine(" chk upgrade failed; boms in flight");
                     }
                 }
             }
@@ -718,12 +729,12 @@ class Player
                                                         .OrderBy(c => map.Dist(c.Id, myC.Id)).FirstOrDefault();                            
                         }
                         if(safeCell == null) {
-                            safeCell = myCells.Where(c => c.Id != myC.Id && map.Dist(c.Id, eb.From) < dist && !possibleBombTargets.Contains(c.Id)).OrderBy(c => map.Dist(c.Id, myC.Id)).FirstOrDefault();
+                            safeCell = myCells.Where(c => !possibleBombTargets.Contains(c.Id) && map.Dist(c.Id, eb.From) < dist).OrderBy(c => map.Dist(c.Id, myC.Id)).FirstOrDefault();
                             if (safeCell == null) {
                                 // try to find one that is neutral and convenient
                                 safeCell = neutralCells.Where(c => map.Dist(c.Id, eb.From) != dist && c.Troups <= myC.Troups + myC.Capacity).OrderBy(c => -c.Capacity).FirstOrDefault();
                                 if (safeCell == null) {
-                                    safeCell = myCells.Where(c => c.Id != myC.Id && map.Dist(c.Id, eb.From) > dist + 1 && !possibleBombTargets.Contains(c.Id)).OrderBy(c => map.Dist(c.Id, myC.Id)).FirstOrDefault();
+                                    safeCell = myCells.Where(c => !possibleBombTargets.Contains(c.Id) && map.Dist(c.Id, eb.From) > dist + 1).OrderBy(c => map.Dist(c.Id, myC.Id)).FirstOrDefault();
                                     if(safeCell == null) {
                                         // still nothing.. then look for one of the enemy ones
                                         safeCell = enemyCells.Where(c => c.Troups + c.Capacity * map.Dist(c.Id, myC.Id) <= myC.Troups + myC.Capacity).OrderBy(c => -c.Capacity).FirstOrDefault();
@@ -736,7 +747,8 @@ class Player
                         }
                         if (safeCell != null) {
                             //Console.Error.WriteLine("- found safe cell {0}", safeCell);
-                            AddAction(actions, myC.Id, Action.Move(myC.Id, safeCell.Id, myC.Troups + myC.Capacity), true);                            
+                            var nextHop = ctx.GetBestPathFwd(myC.Id, safeCell.Id, map);
+                            AddAction(actions, myC.Id, Action.Move(myC.Id, nextHop.Id, myC.Troups + myC.Capacity), true);                            
                         }                            
                     }
                 }
